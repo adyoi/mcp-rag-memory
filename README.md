@@ -174,6 +174,27 @@ Restart opencode after any config change.
 | | `memory_consolidate` | Dedupe near-identical + promote hot memories |
 | | `memory_stats` | Counts, tokens, avg importance, by type |
 
+## Custom slash commands
+
+The 18 MCP tools are called by the AI automatically — but you can also
+trigger them directly with custom commands. Sources (same name, project
+wins):
+
+- Per-project: `.opencode/commands/`
+- Global: `~/.config/opencode/commands/`
+
+| Command | Backing tool | Use |
+|---------|--------------|-----|
+| `/remember <content> [--type][--importance]` | `memory_remember` | Save a memory |
+| `/recall <topic>` | `memory_recall` | Search memories semantically |
+| `/context <topic>` | `memory_context` | Context block for prompts |
+| `/consolidate` | `memory_consolidate` | Dedupe + promote hot memories |
+| `/search <query>` | `rag_search` | Semantic search documents |
+| `/retrieve <query>` | `rag_retrieve` | Raw context block + tokens |
+| `/ingest <text>` | `rag_ingest_text` | Store knowledge text |
+| `/docs` | `rag_list_documents` | List all documents |
+| `/stats` | `system_stats` + doc/memory stats | Full statistics |
+
 ## CLI
 
 ```bash
