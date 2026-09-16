@@ -25,6 +25,71 @@ npm run build            # compile to dist/
 npm run cli -- stats     # CLI playground
 ```
 
+## Works with any MCP client
+
+This is a **standard MCP server** (stdio transport, official
+`@modelcontextprotocol/sdk`). It speaks the MCP spec, so **any** agent
+that supports MCP can use it — not just opencode. Memory & knowledge
+become **shared across all your tools**: remember once, recall everywhere.
+
+### opencode
+
+```json
+{
+  "mcp": {
+    "rag-memory": {
+      "type": "local",
+      "command": ["node", "--import", "tsx", "D:/Project/mcp-server/src/mcp/rag-server.ts"],
+      "cwd": "D:/Project/mcp-server",
+      "enabled": true,
+      "environment": { "RAG_DB_DIR": "D:/Project/mcp-server/.rag-data" }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+`claude_desktop_config.json` (in `%APPDATA%\Claude`):
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "node",
+      "args": ["--import", "tsx", "D:/Project/mcp-server/src/mcp/rag-server.ts"],
+      "env": { "RAG_DB_DIR": "D:/Project/mcp-server/.rag-data" }
+    }
+  }
+}
+```
+
+### Cursor / Windsurf
+
+Settings → MCP → add server, same `command`/`args` pattern as Claude
+Desktop. No `cwd` needed — use absolute paths for the entry file and DB.
+
+### VS Code (Copilot)
+
+`mcp.json` in `.vscode/`:
+
+```json
+{
+  "servers": {
+    "rag-memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["--import", "tsx", "D:/Project/mcp-server/src/mcp/rag-server.ts"],
+      "env": { "RAG_DB_DIR": "D:/Project/mcp-server/.rag-data" }
+    }
+  }
+}
+```
+
+> Tip: define a custom command to reuse anywhere, e.g.
+> `mcp-rag-memory` pointing at
+> `node --import tsx <abs-path>/src/mcp/rag-server.ts`.
+
 ## opencode configuration
 
 ### Global config (`~/.config/opencode/opencode.json`)
