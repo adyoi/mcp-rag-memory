@@ -3,337 +3,454 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mcp-rag-memory — Persistent memory for AI</title>
-<meta name="description" content="RAG + context management MCP server: persistent memory, vector search, zero APIs — works with opencode, Claude Desktop, Cursor, VS Code and any MCP client.">
+<title>mcp-rag-memory — A memory for your AI buddies</title>
+<meta name="description" content="RAG + context management MCP server: persistent memory, vector search, zero APIs. Works with any MCP client, fully offline.">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Comic+Neue:wght@400;700&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #060a14;
-    --surface: #0c1220;
-    --border: #1a2440;
-    --fg: #8b9bc0;
-    --bright: #e2e8f0;
-    --accent: #6ee7b7;
-    --accent2: #38bdf8;
-    --accent3: #a78bfa;
-    --code-bg: #0a0f1a;
-    --card-bg: rgba(14, 22, 42, 0.7);
-    --glow: rgba(110, 231, 183, 0.15);
-  }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    background: var(--bg);
-    color: var(--fg);
-    line-height: 1.7;
-    overflow-x: hidden;
-    min-height: 100vh;
-  }
-  /* animated grid bg */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-      linear-gradient(rgba(110,231,183,.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(110,231,183,.03) 1px, transparent 1px);
-    background-size: 60px 60px;
-    pointer-events: none;
-    z-index: 0;
-  }
-  /* radial glow */
-  body::after {
-    content: '';
-    position: fixed;
-    top: -200px; left: 50%; transform: translateX(-50%);
-    width: 800px; height: 800px;
-    background: radial-gradient(circle, rgba(56,189,248,.1) 0%, transparent 70%);
-    pointer-events: none; z-index: 0;
-  }
-  .wrap { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 0 24px 100px; }
 
-  /* ─── hero ─── */
+  :root {
+    --sky: #87ceeb;
+    --sky-light: #dff3ff;
+    --yellow: #ffd93d;
+    --orange: #ff9f1c;
+    --pink: #ff6b9d;
+    --purple: #b583ff;
+    --green: #4ecdc4;
+    --blue: #3b82f6;
+    --ink: #2a2a35;
+    --white: #fffdf5;
+    --paper: #fff7e0;
+  }
+
+  body {
+    font-family: 'Comic Neue', 'Comic Sans MS', cursive, sans-serif;
+    background:
+      radial-gradient(circle at 15% 20%, var(--yellow) 0 12px, transparent 13px),
+      radial-gradient(circle at 85% 10%, var(--pink) 0 9px, transparent 10px),
+      radial-gradient(circle at 60% 90%, var(--green) 0 11px, transparent 12px),
+      radial-gradient(circle at 8% 75%, var(--purple) 0 8px, transparent 9px),
+      linear-gradient(180deg, var(--sky) 0%, var(--sky-light) 100%);
+    color: var(--ink);
+    line-height: 1.7;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 20px 20px 80px; position: relative; }
+
+  /* ─────────────────────── hero ─────────────────────── */
   .hero {
     text-align: center;
-    padding: 72px 0 56px;
+    padding: 40px 0 30px;
+    position: relative;
   }
-  .hero-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 6px 16px;
-    font-size: .8rem;
-    color: var(--accent);
-    margin-bottom: 24px;
-    backdrop-filter: blur(8px);
-  }
-  .hero-tag::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   .hero h1 {
-    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-family: 'Baloo 2', cursive;
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    font-weight: 800;
+    color: var(--ink);
+    text-shadow: 3px 3px 0 #fff, 6px 6px 0 rgba(255,107,157,.55);
+    letter-spacing: .5px;
+    margin: 10px auto 6px;
+    display: inline-block;
+    transform: rotate(-1.5deg);
+  }
+  .hero .sub-bubble {
+    display: inline-block;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 24px;
+    padding: 12px 24px;
     font-weight: 700;
-    letter-spacing: -1.5px;
-    background: linear-gradient(135deg, #e2e8f0 30%, var(--accent2) 60%, var(--accent3));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    line-height: 1.15;
-    margin-bottom: 16px;
+    font-size: 1.05rem;
+    max-width: 560px;
+    transform: rotate(1deg);
+    position: relative;
+    box-shadow: 4px 4px 0 var(--ink);
   }
-  .hero p { font-size: 1.1rem; color: var(--fg); max-width: 520px; margin: 0 auto 28px; }
-  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .hero .sub-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -18px; left: 60px;
+    border: 10px solid transparent;
+    border-top-color: var(--paper);
+    filter: drop-shadow(0 3px 0 var(--ink));
+  }
+  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 26px; }
   .badge {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 5px 14px;
-    font-size: .78rem;
-    font-weight: 500;
-    color: var(--bright);
-    backdrop-filter: blur(8px);
-    transition: border-color .2s, box-shadow .2s;
+    font-family: 'Baloo 2', cursive;
+    font-weight: 700;
+    font-size: .9rem;
+    background: var(--yellow);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    padding: 6px 16px;
+    box-shadow: 3px 3px 0 var(--ink);
+    transform: rotate(var(--r, 0deg));
+    transition: transform .15s;
   }
-  .badge:hover { border-color: var(--accent); box-shadow: 0 0 12px var(--glow); }
-  .badge span { color: var(--accent); }
+  .badge:hover { transform: rotate(0deg) scale(1.08); }
+  .badge span { background: var(--ink); color: #fff; border-radius: 8px; padding: 0 6px; margin-right: 2px; }
 
-  /* ─── sections ─── */
+  .clouds { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+  .clouds span {
+    position: absolute;
+    width: 70px; height: 22px;
+    background: rgba(255,255,255,.85);
+    border-radius: 50px;
+  }
+  .clouds span::before, .clouds span::after {
+    content: '';
+    position: absolute; background: inherit; border-radius: 50%;
+  }
+  .clouds span::before { width: 28px; height: 28px; top: -12px; left: 14px; }
+  .clouds span::after { width: 20px; height: 20px; top: -7px; right: 12px; }
+  .c1 { animation: drift 26s linear infinite; }
+  .c2 { animation: drift 34s linear infinite reverse; }
+  .c3 { animation: drift 42s linear infinite; }
+  @keyframes drift { from { margin-left: -120px; } to { margin-left: 100%; } }
+
+  /* ─────────────────────── sections ─────────────────────── */
   h2 {
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: var(--bright);
-    margin: 56px 0 16px;
+    font-family: 'Baloo 2', cursive;
+    font-weight: 800;
+    font-size: 1.5rem;
     display: flex;
     align-items: center;
     gap: 10px;
+    margin: 52px 0 18px;
   }
-  h2::before {
-    content: '';
-    width: 3px; height: 20px;
-    background: linear-gradient(var(--accent), var(--accent2));
-    border-radius: 2px;
+  h2 .emoji-badge {
+    background: var(--yellow);
+    border: 3px solid var(--ink);
+    border-radius: 12px;
+    padding: 2px 10px;
+    box-shadow: 3px 3px 0 var(--ink);
+    transform: rotate(-2deg);
   }
-  h3 { font-size: 1rem; font-weight: 600; color: var(--accent2); margin: 28px 0 8px; }
-  p, li { font-size: .95rem; }
-  ul, ol { padding-left: 20px; margin: 12px 0; }
+  h3 { font-family: 'Baloo 2', cursive; font-weight: 700; font-size: 1.1rem; color: var(--blue); margin: 24px 0 6px; }
+
+  p, li { font-size: 1rem; }
+  ul, ol { padding-left: 22px; margin: 10px 0; }
   li { margin: 6px 0; }
-  a { color: var(--accent2); text-decoration: none; transition: color .2s; }
-  a:hover { color: var(--accent); }
+
+  a { color: var(--blue); font-weight: 700; text-decoration: underline wavy 2px rgba(59,130,246,.5); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--pink); }
+
   code {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: .85em;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 1px 7px;
-    color: var(--accent);
+    font-family: 'Comic Neue', monospace;
+    font-weight: 700;
+    background: var(--paper);
+    border: 2px dashed var(--blue);
+    border-radius: 8px;
+    padding: 1px 8px;
+    font-size: .88em;
+    color: var(--blue);
+    white-space: nowrap;
   }
   pre {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px 20px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 16px;
+    padding: 16px 20px;
     overflow-x: auto;
-    margin: 14px 0;
+    position: relative;
+    box-shadow: 4px 4px 0 var(--ink);
+    max-width: 100%;
   }
-  pre code { background: none; border: none; padding: 0; color: var(--fg); }
+  pre::before {
+    content: '✦ ✦ ✦';
+    color: var(--pink);
+    position: absolute; top: -14px; left: 16px;
+    background: var(--paper);
+    padding: 0 8px;
+    border-radius: 8px;
+    font-size: .75rem;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--ink); white-space: pre; }
 
-  /* ─── cards ─── */
-  .card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 16px;
-    margin: 18px 0;
-  }
+  /* ─────────────────────── cards ─────────────────────── */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; margin: 20px 0; }
   .card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 20px;
     padding: 20px;
-    backdrop-filter: blur(8px);
-    transition: border-color .25s, box-shadow .25s, transform .25s;
+    box-shadow: 5px 5px 0 var(--ink);
+    transform: rotate(var(--tilt, 0deg));
+    transition: transform .18s, box-shadow .18s;
+    position: relative;
   }
-  .card:hover { border-color: var(--accent); box-shadow: 0 0 24px var(--glow); transform: translateY(-2px); }
-  .card .icon { font-size: 1.6rem; margin-bottom: 10px; }
-  .card strong { color: var(--bright); }
-  .card p { font-size: .88rem; margin-top: 4px; }
+  .card:nth-child(odd) { --tilt: -1.2deg; }
+  .card:nth-child(even) { --tilt: 1.2deg; }
+  .card:hover { transform: rotate(0deg) translateY(-4px); box-shadow: 8px 8px 0 var(--ink); }
+  .card .icon { font-size: 2.2rem; line-height: 1; margin-bottom: 10px; }
+  .card strong { font-family: 'Baloo 2', cursive; font-size: 1.05rem; color: var(--orange); }
+  .card p { font-size: .92rem; margin-top: 4px; }
 
-  /* ─── identity box ─── */
+  /* colorful card tops */
+  .card.blue { border-top: 8px solid var(--blue); }
+  .card.green { border-top: 8px solid var(--green); }
+  .card.pink { border-top: 8px solid var(--pink); }
+  .card.purple { border-top: 8px solid var(--purple); }
+  .card.orange { border-top: 8px solid var(--orange); }
+
+  /* ─────────────────────── identity ─────────────────────── */
   .identity {
-    background: linear-gradient(135deg, rgba(110,231,183,.06), rgba(167,139,250,.06));
-    border: 1px solid rgba(110,231,183,.25);
-    border-radius: 12px;
-    padding: 18px 22px;
-    margin: 18px 0;
-  }
-  .identity strong { color: var(--bright); }
-
-  /* ─── tools table ─── */
-  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: .9rem; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-  th { color: var(--bright); font-weight: 600; background: var(--code-bg); }
-  tr:hover td { background: rgba(56,189,248,.03); }
-  td code { font-size: .82em; }
-
-  /* ─── architecture ─── */
-  .arch {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
+    background: var(--yellow);
+    border: 3px solid var(--ink);
+    border-radius: 24px;
+    padding: 20px 24px;
     margin: 16px 0;
+    box-shadow: 5px 5px 0 var(--ink);
+    transform: rotate(-.6deg);
+    position: relative;
   }
-  .arch-chip {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+  .identity strong { font-family: 'Baloo 2', cursive; font-size: 1.2rem; color: var(--ink); }
+  .identity::before {
+    content: '🦸';
+    position: absolute;
+    top: -16px; right: -10px;
+    font-size: 2.4rem;
+    transform: rotate(12deg);
+  }
+
+  /* ─────────────────────── speech bubbles ─────────────────────── */
+  .bubble {
+    background: #fff;
+    border: 3px solid var(--ink);
+    border-radius: 24px;
+    padding: 14px 20px;
+    margin: 10px 0 20px;
+    position: relative;
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  .bubble::after {
+    content: '';
+    position: absolute;
+    left: 30px; bottom: -16px;
+    border: 9px solid transparent;
+    border-top-color: #fff;
+    filter: drop-shadow(0 2px 0 var(--ink));
+  }
+
+  /* ─────────────────────── tools table ─────────────────────── */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .95rem; }
+  th {
+    font-family: 'Baloo 2', cursive;
+    color: #fff;
+    background: var(--blue);
+    border: 3px solid var(--ink);
+    padding: 10px 12px;
+  }
+  td { border: 3px solid var(--ink); padding: 9px 12px; background: var(--paper); }
+  tr:hover td { background: var(--sky-light); }
+  th:first-child { border-radius: 14px 0 0 0; }
+  th:last-child { border-radius: 0 14px 0 0; }
+
+  /* ─────────────────────── arch chips ─────────────────────── */
+  .arch { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+  .chip {
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 16px;
     padding: 12px 16px;
-    flex: 1 1 180px;
-    min-width: 160px;
-    backdrop-filter: blur(8px);
+    flex: 1 1 190px;
+    box-shadow: 4px 4px 0 var(--ink);
+    transform: rotate(var(--r, 0deg));
   }
-  .arch-chip .name { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: var(--accent2); }
-  .arch-chip .desc { font-size: .8rem; color: var(--fg); margin-top: 4px; }
+  .chip:nth-child(odd) { --r: -1deg; }
+  .chip:nth-child(even) { --r: 1deg; }
+  .chip .name { font-family: 'Baloo 2', cursive; font-weight: 700; color: var(--purple); }
+  .chip .desc { font-size: .85rem; margin-top: 2px; }
 
-  /* ─── footer ─── */
-  footer {
-    margin-top: 64px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border);
+  /* ─────────────────────── workflow steps ─────────────────────── */
+  .steps { display: flex; gap: 14px; flex-wrap: wrap; margin: 18px 0; }
+  .step {
+    flex: 1 1 190px;
     text-align: center;
-    font-size: .82rem;
-    color: #4a5a80;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 18px;
+    padding: 18px 14px;
+    box-shadow: 5px 5px 0 var(--ink);
   }
-  footer a { color: var(--accent); }
+  .step .num {
+    font-family: 'Baloo 2', cursive;
+    font-weight: 800;
+    font-size: 1.4rem;
+    color: #fff;
+    background: var(--pink);
+    width: 44px; height: 44px;
+    line-height: 38px;
+    border-radius: 50%;
+    border: 3px solid var(--ink);
+    margin: 0 auto 10px;
+    box-shadow: 2px 2px 0 var(--ink);
+  }
+  .step strong { font-family: 'Baloo 2', cursive; font-size: 1.05rem; }
 
-  /* ─── responsive ─── */
+  /* ─────────────────────── footer ─────────────────────── */
+  footer {
+    margin-top: 60px;
+    text-align: center;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  footer .sticker {
+    display: inline-block;
+    background: var(--green);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    padding: 8px 20px;
+    box-shadow: 3px 3px 0 var(--ink);
+    transform: rotate(-1.5deg);
+  }
+
+  @keyframes wobble {
+    0%,100% { transform: rotate(-4deg); }
+    50% { transform: rotate(4deg); }
+  }
+  .wobble { display: inline-block; animation: wobble 3s ease-in-out infinite; }
+
   @media (max-width: 600px) {
     .card-grid { grid-template-columns: 1fr; }
-    .hero { padding: 48px 0 36px; }
-    .hero h1 { font-size: 1.8rem; }
+    .steps { flex-direction: column; }
+    pre { overflow-x: auto; }
   }
 </style>
 </head>
 <body>
+
+<div class="clouds">
+  <span class="c1" style="top:8%; "></span>
+  <span class="c2" style="top:20%; margin-left:60%;"></span>
+  <span class="c3" style="top:12%;"></span>
+</div>
+
 <div class="wrap">
 
   <!-- HERO -->
   <section class="hero">
-    <div class="hero-tag"><span></span>Offline • MCP Protocol • Zero APIs</div>
+    <div style="font-family:'Baloo 2';font-weight:700;font-size:1rem;background:var(--pink);display:inline-block;border:3px solid var(--ink);border-radius:12px;padding:4px 14px;box-shadow:3px 3px 0 var(--ink);color:#fff;transform:rotate(-2deg)">
+      🚀 Offline · MCP Protocol · Zero APIs
+    </div>
     <h1>mcp-rag-memory</h1>
-    <p>Long-term memory &amp; knowledge retrieval for AI agents — powered by RAG, runs fully offline.</p>
+    <div class="sub-bubble">Your AI buddy's long-term memory 🧠<br>
+      <span style="font-weight:400">RAG + context management — fully offline, no API keys!</span>
+    </div>
     <div class="badges">
-      <div class="badge"><span>Node.js</span></div>
-      <div class="badge"><span>TypeScript</span></div>
-      <div class="badge"><span>SQLite</span></div>
-      <div class="badge">18 Tools</div>
-      <div class="badge"><span>MCP</span></div>
+      <div class="badge" style="--r:-2deg"><span>Node</span> js</div>
+      <div class="badge" style="--r:1.5deg"><span>TS</span> TypeScript</div>
+      <div class="badge" style="--r:-1deg"><span>SQL</span> SQLite</div>
+      <div class="badge" style="--r:2deg">18 Tools</div>
+      <div class="badge" style="--r:-1.5deg">Works offline</div>
     </div>
   </section>
 
-  <!-- Identity -->
-  <h2>Who is this for?</h2>
+  <!-- IDENTITY -->
+  <h2><span class="emoji-badge">🦸</span> Who's the boss?</h2>
   <div class="identity">
     <strong>The Coder</strong> — <em>"I'm The Coder, Selamat datang dan Semoga perjalanan mu menyenangkan"</em>
-    <br><span style="font-size:.88rem">Stored as an importance-1.0 memory with tag <code>identity</code>. Every session recalls it on start.</span>
+    <p style="font-size:.9rem;margin-top:6px">Saved as an importance-1.0 memory, tag <code>identity</code> — every session says hi to The Coder first 👋</p>
   </div>
 
-  <!-- What it does -->
-  <h2>What it does</h2>
+  <!-- WHAT IT DOES -->
+  <h2><span class="emoji-badge">✨</span> What it does</h2>
   <div class="card-grid">
-    <div class="card">
+    <div class="card blue">
       <div class="icon">🧠</div>
       <strong>Context Memory</strong>
-      <p>Remember facts, decisions, preferences. Recall them later. Rate by importance. Consolidate duplicates.</p>
+      <p>Remember facts, decisions, preferences. Recall them later. Rate importance, squash duplicates!</p>
     </div>
-    <div class="card">
+    <div class="card green">
       <div class="icon">📚</div>
       <strong>Document RAG</strong>
-      <p>Ingest docs (text, files, folders) → chunk → embed locally → store in SQLite → semantically retrieve.</p>
+      <p>Feed it docs → it chunks, embeds &amp; stores in SQLite → ask questions, get the right bits back.</p>
     </div>
-    <div class="card">
+    <div class="card pink">
       <div class="icon">⚡</div>
       <strong>Zero APIs</strong>
-      <p>1024-dim local hashing embedder, built-in <code>node:sqlite</code>. Fully offline. No API keys needed.</p>
+      <p>1024-dim local hashing embedder, built-in <code>node:sqlite</code>. No cloud, no keys, no bill 💸</p>
     </div>
-    <div class="card">
+    <div class="card purple">
       <div class="icon">🔌</div>
       <strong>Universal MCP</strong>
-      <p>Standard MCP server — works with <strong>opencode, Claude Desktop, Cursor, VS Code</strong> and any MCP client.</p>
+      <p>Works with <strong>opencode, Claude Desktop, Cursor, VS Code</strong> — every MCP buddy, one memory.</p>
     </div>
   </div>
 
-  <!-- Quick start -->
-  <h2>Quick start</h2>
+  <!-- QUICK START -->
+  <h2><span class="emoji-badge">⚡</span> Quick start</h2>
+  <div class="bubble">3 easy commands and you're in business! 🎩</div>
   <pre><code>npm install
 npm test                 # 66 checks: unit + MCP round-trip
 npm run build            # compile to dist/
 npm run cli -- stats     # CLI playground</code></pre>
 
-  <!-- Compatibility -->
-  <h2>Works with any MCP client</h2>
-  <p style="font-size:.9rem;margin-bottom:14px">Memory &amp; knowledge become <strong>shared across all your tools</strong>. Remember once, recall everywhere.</p>
+  <!-- COMPATIBILITY -->
+  <h2><span class="emoji-badge">🌍</span> One memory, every agent</h2>
   <div class="card-grid">
-    <div class="card">
+    <div class="card blue">
       <div class="icon">⚡</div>
       <strong>opencode</strong>
-      <p>Global MCP config — works across every project automatically.</p>
+      <p>Global MCP config — remembers you in every project.</p>
     </div>
-    <div class="card">
+    <div class="card purple">
       <div class="icon">🟣</div>
       <strong>Claude Desktop</strong>
-      <p>Add to <code>claude_desktop_config.json</code> under <code>mcpServers</code>.</p>
+      <p><code>claude_desktop_config.json</code> → <code>mcpServers</code>.</p>
     </div>
-    <div class="card">
+    <div class="card pink">
       <div class="icon">🔵</div>
       <strong>Cursor / Windsurf</strong>
-      <p>Settings → MCP → Add server — same command/args pattern.</p>
+      <p>Settings → MCP → Add server. Same trick works!</p>
     </div>
-    <div class="card">
+    <div class="card green">
       <div class="icon">🟦</div>
       <strong>VS Code</strong>
-      <p>Add to <code>.vscode/mcp.json</code> with <code>"type": "stdio"</code>.</p>
+      <p><code>.vscode/mcp.json</code> with <code>"type": "stdio"</code>.</p>
     </div>
   </div>
-  <p style="font-size:.86rem;color:#5a6a8a;margin-top:4px">Use the same <code>node --import tsx &lt;path&gt;/src/mcp/rag-server.ts</code> command everywhere.</p>
+  <p style="font-size:.88rem">🧩 <strong>Pro tip:</strong> same command everywhere — <code>node --import tsx &lt;path&gt;/src/mcp/rag-server.ts</code>. Remember once, recall everywhere!</p>
 
-  <!-- Tools -->
-  <h2>18 MCP Tools</h2>
+  <!-- TOOLS -->
+  <h2><span class="emoji-badge">🧰</span> 18 MCP Tools</h2>
   <table>
     <tr><th>Group</th><th>Tool</th><th>Purpose</th></tr>
     <tr><td>System</td><td><code>system_stats</code></td><td>DB dir, doc/memory counts</td></tr>
-    <tr><td rowspan="3">RAG Ingest</td><td><code>rag_ingest_text</code></td><td>Store raw text</td></tr>
-    <tr><td><code>rag_ingest_file</code></td><td>Store a file</td></tr>
-    <tr><td><code>rag_ingest_dir</code></td><td>Recursively ingest a directory</td></tr>
-    <tr><td rowspan="2">RAG Query</td><td><code>rag_search</code></td><td>Semantic search, ranked chunks</td></tr>
-    <tr><td><code>rag_retrieve</code></td><td>Ready-to-inject context block</td></tr>
-    <tr><td rowspan="2">RAG Docs</td><td><code>rag_list_documents</code></td><td>Document inventory</td></tr>
-    <tr><td><code>rag_delete_document</code></td><td>Remove a document + chunks</td></tr>
-    <tr><td rowspan="6">Memory</td><td><code>memory_remember</code></td><td>Save long-term memory</td></tr>
-    <tr><td><code>memory_recall</code></td><td>Semantic memory search</td></tr>
-    <tr><td><code>memory_context</code></td><td>Compact context block for prompts</td></tr>
-    <tr><td><code>memory_list/get/update/forget</code></td><td>Full CRUD</td></tr>
-    <tr><td><code>memory_consolidate</code></td><td>Dedupe + promote hot memories</td></tr>
-    <tr><td><code>memory_stats</code></td><td>Counts, tokens, avg importance</td></tr>
+    <tr><td>RAG Ingest</td><td><code>rag_ingest_text</code></td><td>Store raw text</td></tr>
+    <tr><td>RAG Ingest</td><td><code>rag_ingest_file</code></td><td>Store a file</td></tr>
+    <tr><td>RAG Ingest</td><td><code>rag_ingest_dir</code></td><td>Ingest a whole directory!</td></tr>
+    <tr><td>RAG Query</td><td><code>rag_search</code></td><td>Semantic search, ranked chunks</td></tr>
+    <tr><td>RAG Query</td><td><code>rag_retrieve</code></td><td>Ready-to-inject context block</td></tr>
+    <tr><td>RAG Docs</td><td><code>rag_list_documents</code></td><td>Document inventory</td></tr>
+    <tr><td>RAG Docs</td><td><code>rag_delete_document</code></td><td>Remove a document + chunks</td></tr>
+    <tr><td>Memory</td><td><code>memory_remember</code></td><td>Save long-term memory</td></tr>
+    <tr><td>Memory</td><td><code>memory_recall</code></td><td>Semantic memory search</td></tr>
+    <tr><td>Memory</td><td><code>memory_context</code></td><td>Compact block for prompts</td></tr>
+    <tr><td>Memory</td><td><code>memory_list/get/update/forget</code></td><td>Full CRUD</td></tr>
+    <tr><td>Memory</td><td><code>memory_consolidate</code></td><td>Dedupe + promote hot memories</td></tr>
+    <tr><td>Memory</td><td><code>memory_stats</code></td><td>Counts, tokens, avg importance</td></tr>
   </table>
 
-  <!-- Architecture -->
-  <h2>Architecture</h2>
+  <!-- ARCHITECTURE -->
+  <h2><span class="emoji-badge">🏗️</span> Architecture</h2>
   <div class="arch">
-    <div class="arch-chip"><div class="name">database.ts</div><div class="desc">node:sqlite — documents, chunks, memories</div></div>
-    <div class="arch-chip"><div class="name">embedder.ts</div><div class="desc">1024-dim local hashing (FNV-1a + n-grams)</div></div>
-    <div class="arch-chip"><div class="name">chunker.ts</div><div class="desc">Paragraph/code-aware chunking with overlap</div></div>
-    <div class="arch-chip"><div class="name">vector-search.ts</div><div class="desc">Cosine similarity brute-force</div></div>
-    <div class="arch-chip"><div class="name">pipeline.ts</div><div class="desc">Ingest / search / retrieve / document mgmt</div></div>
-    <div class="arch-chip"><div class="name">memory.ts</div><div class="desc">Remember / recall / consolidate / stats</div></div>
-    <div class="arch-chip"><div class="name">rag-server.ts</div><div class="desc">MCP server — 18 tools, stdio transport</div></div>
+    <div class="chip"><div class="name">database.ts</div><div class="desc">node:sqlite — docs, chunks, memories</div></div>
+    <div class="chip"><div class="name">embedder.ts</div><div class="desc">1024-dim local hashing (FNV-1a + n-grams)</div></div>
+    <div class="chip"><div class="name">chunker.ts</div><div class="desc">Paragraph/code-aware chunking w/ overlap</div></div>
+    <div class="chip"><div class="name">vector-search.ts</div><div class="desc">Cosine similarity brute-force</div></div>
+    <div class="chip"><div class="name">pipeline.ts</div><div class="desc">Ingest / search / retrieve / doc mgmt</div></div>
+    <div class="chip"><div class="name">memory.ts</div><div class="desc">Remember / recall / consolidate / stats</div></div>
+    <div class="chip"><div class="name">rag-server.ts</div><div class="desc">MCP server — 18 tools, stdio transport</div></div>
   </div>
-  <p style="font-size:.85rem;color:#5a6a8a">Data lives in <code>.rag-data/rag.sqlite</code> (git-ignored).</p>
+  <p style="font-size:.88rem">🍪 Data lives in <code>.rag-data/rag.sqlite</code> (git-ignored, never pushes your memories!).</p>
 
-  <!-- Configuration -->
-  <h2>Configuration</h2>
-  <h3>opencode (global)</h3>
+  <!-- CONFIG -->
+  <h2><span class="emoji-badge">🎛️</span> Configuration</h2>
+  <h3>🔥 opencode (global)</h3>
   <pre><code>{
   "mcp": {
     "rag-memory": {
@@ -344,7 +461,7 @@ npm run cli -- stats     # CLI playground</code></pre>
     }
   }
 }</code></pre>
-  <h3>Claude Desktop</h3>
+  <h3>🟣 Claude Desktop</h3>
   <pre><code>{
   "mcpServers": {
     "rag-memory": {
@@ -355,34 +472,22 @@ npm run cli -- stats     # CLI playground</code></pre>
   }
 }</code></pre>
 
-  <!-- Workflow -->
-  <h2>Workflow</h2>
-  <div class="card-grid" style="grid-template-columns: repeat(3, 1fr);">
-    <div class="card" style="text-align:center;">
-      <div class="icon">1</div>
-      <strong>Save</strong>
-      <p style="font-size:.85rem"><code>rag_ingest_*</code> &nbsp; <code>memory_remember</code></p>
-    </div>
-    <div class="card" style="text-align:center;">
-      <div class="icon">2</div>
-      <strong>Recall</strong>
-      <p style="font-size:.85rem"><code>memory_context</code> &nbsp; <code>rag_retrieve</code></p>
-    </div>
-    <div class="card" style="text-align:center;">
-      <div class="icon">3</div>
-      <strong>Act</strong>
-      <p style="font-size:.85rem">Inject context into prompt, send to LLM</p>
-    </div>
+  <!-- WORKFLOW -->
+  <h2><span class="emoji-badge">🎬</span> How it flows</h2>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><strong>Save</strong><p style="font-size:.88rem"><code>rag_ingest_*</code><br><code>memory_remember</code></p></div>
+    <div class="step"><div class="num">2</div><strong>Recall</strong><p style="font-size:.88rem"><code>memory_context</code><br><code>rag_retrieve</code></p></div>
+    <div class="step"><div class="num">3</div><strong>Act</strong><p style="font-size:.88rem">Inject context → let your AI shine ✨</p></div>
   </div>
 
-  <!-- Links -->
+  <!-- FOOTER -->
   <footer>
     <p>
-      <a href="https://github.com/adyoi/mcp-rag-memory">GitHub</a> &nbsp;·&nbsp;
-      <a href="https://github.com/adyoi/mcp-rag-memory#readme">Full README</a> &nbsp;·&nbsp;
+      <a href="https://github.com/adyoi/mcp-rag-memory">GitHub</a> ·
+      <a href="https://github.com/adyoi/mcp-rag-memory#readme">Full README</a> ·
       <a href="https://github.com/adyoi/mcp-rag-memory/issues">Issues</a>
     </p>
-    <p style="margin-top:8px;color:#3a4a6a">Made with TypeScript + MCP Protocol · No cloud · No API keys</p>
+    <div class="sticker" style="margin-top:14px">Made with 💛 + TypeScript · No cloud · No API keys</div>
   </footer>
 
 </div>
