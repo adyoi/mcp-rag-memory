@@ -1,5 +1,7 @@
 # RAG + Context Management MCP Server
 
+<img src="assets/logo.jpg" alt="mcp-rag-memory" width="500">
+
 Persistent long-term memory & knowledge retrieval for AI assistants.
 Exposes RAG (vector storage + semantic search) and context management
 (memories) as MCP tools, so opencode can store and recall
