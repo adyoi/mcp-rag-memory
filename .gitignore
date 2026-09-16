@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.rag-data/
+.test-data/
+.test-cli/
+.test-dist/
+plugin-log.txt
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.rag-data-wal
+.rag-data-shm

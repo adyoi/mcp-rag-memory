@@ -1,0 +1,22 @@
+{
+  "name": "mcp-server",
+  "version": "2.0.0",
+  "description": "RAG + Context Management MCP server: long-term memory, vector storage, knowledge retrieval",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "cli": "tsx src/cli.ts",
+    "test": "tsx src/test/test-all.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.5",
+    "tsx": "^4.23.0",
+    "typescript": "^5.7.0"
+  }
+}
