@@ -73,6 +73,14 @@ export function embed(text: string): Float64Array {
   return vec;
 }
 
+/** Dot product of two same-length vectors. For pre-normalized vectors this equals cosine similarity. */
+export function dotProduct(a: Float64Array, b: Float64Array): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
 /** Cosine similarity between two normalized vectors. Returns 0 for degenerate inputs. */
 export function cosineSimilarity(a: Float64Array, b: Float64Array): number {
   if (a.length !== b.length) return 0;

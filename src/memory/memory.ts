@@ -1,7 +1,8 @@
 import { getDB, newId, nowMs, packVector, unpackVector } from "../db/database.js";
-import { embed, cosineSimilarity } from "../rag/embedder.js";
+import { dotProduct } from "../rag/embedder.js";
 import { estimateTokens } from "../rag/chunker.js";
-import { vectorSearch } from "../rag/vector-search.js";
+import { embedText } from "../rag/embeddings.js";
+import { vectorSearch, invalidateVectorCache } from "../rag/vector-search.js";
 
 export const MEMORY_TYPES = [
   "fact",
@@ -14,6 +15,9 @@ export const MEMORY_TYPES = [
 ] as const;
 
 export type MemoryType = (typeof MEMORY_TYPES)[number];
+
+/** Half-life in days for the recall decay curve. */
+const DECAY_HALF_LIFE_DAYS = Number(process.env.RAG_MEMORY_HALF_LIFE_DAYS ?? 14);
 
 export interface MemoryInput {
   content: string;
@@ -36,9 +40,11 @@ export interface MemoryRecord {
 
 export interface MemoryRecallHit extends MemoryRecord {
   score: number;
+  /** Exponential decay factor applied to the raw similarity (0..1, based on staleness). */
+  decay: number;
 }
 
-export function remember(input: MemoryInput): MemoryRecord {
+export async function remember(input: MemoryInput): Promise<MemoryRecord> {
   const db = getDB();
   const id = newId();
   const ts = nowMs();
@@ -46,31 +52,40 @@ export function remember(input: MemoryInput): MemoryRecord {
   const importance = clampImportance(input.importance ?? 0.5);
   const tags = JSON.stringify(input.tags ?? []);
 
-  const vec = embed(input.content);
+  const vec = await embedText(input.content);
   db.prepare(
     `INSERT INTO memories (id, type, content, importance, embedding, tags, recall_count, last_recalled, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`
   ).run(id, type, input.content, importance, packVector(vec), tags, ts, ts);
+  invalidateVectorCache();
 
   return getMemory(id)!;
 }
 
-export function recall(query: string, topK = 8, minScore = 0.1): MemoryRecallHit[] {
+export async function recall(query: string, topK = 8, minScore = 0.1): Promise<MemoryRecallHit[]> {
   const db = getDB();
-  const q = embed(query);
-  const hits = vectorSearch(q, { topK, minScore, collection: "memories" });
+  const q = await embedText(query);
+  const hits = vectorSearch(q, { topK: topK * 2, minScore, collection: "memories" });
 
-  const results: MemoryRecallHit[] = [];
+  const ts = nowMs();
   const bump = db.prepare("UPDATE memories SET recall_count = recall_count + 1, last_recalled = ? WHERE id = ?");
+  const results: MemoryRecallHit[] = [];
   for (const h of hits) {
     const rec = getMemory(h.key);
     if (!rec) continue;
-    bump.run(nowMs(), rec.id);
-    const updated = getMemory(rec.id);
-    if (!updated) continue;
-    results.push({ ...updated, score: h.score });
+    bump.run(ts, rec.id);
+    const ageMs = ts - (rec.lastRecalled ?? rec.createdAt);
+    const decay = Math.pow(0.5, ageMs / (DECAY_HALF_LIFE_DAYS * 86_400_000));
+    results.push({
+      ...rec,
+      recallCount: rec.recallCount + 1,
+      lastRecalled: ts,
+      score: h.score * decay,
+      decay,
+    });
   }
-  return results;
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, topK);
 }
 
 export function listMemories(opts: { type?: MemoryType; tag?: string; minImportance?: number; limit?: number } = {}): MemoryRecord[] {
@@ -83,8 +98,8 @@ export function listMemories(opts: { type?: MemoryType; tag?: string; minImporta
     params.push(opts.type);
   }
   if (opts.tag) {
-    clauses.push("tags LIKE ?");
-    params.push(`%"${opts.tag}"%`);
+    clauses.push("EXISTS (SELECT 1 FROM json_each(memories.tags) AS _tg WHERE _tg.value = ?)");
+    params.push(opts.tag);
   }
   if (opts.minImportance !== undefined) {
     clauses.push("importance >= ?");
@@ -131,10 +146,10 @@ export function getMemory(id: string): MemoryRecord | null {
   };
 }
 
-export function updateMemory(
+export async function updateMemory(
   id: string,
   patch: { content?: string; type?: MemoryType; importance?: number; tags?: string[] }
-): MemoryRecord | null {
+): Promise<MemoryRecord | null> {
   const db = getDB();
   const existing = getMemory(id);
   if (!existing) return null;
@@ -143,12 +158,13 @@ export function updateMemory(
   const type = patch.type ?? existing.type;
   const importance = patch.importance !== undefined ? clampImportance(patch.importance) : existing.importance;
   const tags = patch.tags ?? existing.tags;
-  const vec = embed(content);
+  const vec = await embedText(content);
   const ts = nowMs();
 
   db.prepare(
     "UPDATE memories SET content = ?, type = ?, importance = ?, tags = ?, embedding = ?, updated_at = ? WHERE id = ?"
   ).run(content, type, importance, JSON.stringify(tags), packVector(vec), ts, id);
+  invalidateVectorCache();
 
   return getMemory(id);
 }
@@ -156,40 +172,50 @@ export function updateMemory(
 export function forget(id: string): { deleted: boolean } {
   const db = getDB();
   const res = db.prepare("DELETE FROM memories WHERE id = ?").run(id);
+  invalidateVectorCache();
   return { deleted: Number(res.changes) > 0 };
 }
 
 export interface ConsolidationReport {
   removedDuplicates: number;
   promoted: number;
+  pruned: number;
   totals: { memories: number; tokens: number };
 }
 
 /**
- * - Removes near-duplicate memories (cosine > 0.92) keeping the highest-importance one.
+ * - Removes near-duplicate memories (dot product > 0.92) keeping the highest-importance one.
  * - Promotes importance of frequently-needed memories (recall_count >= 5) by +0.1.
+ * - Optionally prunes stale, low-importance, never-recalled memories (RAG_PRUNE=1,
+ *   RAG_PRUNE_IMPORTANCE=0.2, RAG_PRUNE_AGE_DAYS=90). Off by default — deletes are irreversible.
  */
-export function consolidate(): ConsolidationReport {
+export async function consolidate(): Promise<ConsolidationReport> {
   const db = getDB();
   const rows = db.prepare("SELECT id, embedding FROM memories").all() as Array<{ id: string; embedding: Uint8Array | null }>;
-  const vectors = rows
-    .map((r) => ({ id: r.id, vec: unpackVector(r.embedding) }))
-    .filter((r) => r.vec !== null) as Array<{ id: string; vec: Float64Array }>;
+  const records = rows
+    .map((r) => ({ id: r.id, rec: getMemory(r.id) }))
+    .filter((r) => r.rec !== null && r.rec !== undefined) as Array<{ id: string; rec: MemoryRecord }>;
+
+  const vectors: Array<{ id: string; vec: Float64Array }> = [];
+  for (const r of records) {
+    const vec = unpackVector(rows.find((row) => row.id === r.id)?.embedding ?? null);
+    if (vec) vectors.push({ id: r.id, vec });
+  }
 
   let removedDuplicates = 0;
+  const toDelete = new Set<string>();
   for (let i = 0; i < vectors.length; i++) {
-    if (!getMemory(vectors[i].id)) continue; // already removed
+    if (toDelete.has(vectors[i].id)) continue;
     for (let j = i + 1; j < vectors.length; j++) {
-      if (!getMemory(vectors[j].id)) continue;
-      const a = getMemory(vectors[i].id)!;
-      const b = getMemory(vectors[j].id)!;
-      const sim = cosineSimilarity(vectors[i].vec, vectors[j].vec);
+      if (toDelete.has(vectors[j].id)) continue;
+      const sim = dotProduct(vectors[i].vec, vectors[j].vec);
       if (sim >= 0.92) {
+        const a = records.find((r) => r.id === vectors[i].id)!.rec;
+        const b = records.find((r) => r.id === vectors[j].id)!.rec;
         if (a.importance >= b.importance) {
-          forget(b.id);
+          toDelete.add(vectors[j].id);
         } else {
-          forget(a.id);
-          // swap so we keep comparing the survivor
+          toDelete.add(vectors[i].id);
           const tmpId = vectors[i].id;
           vectors[i].id = vectors[j].id;
           vectors[j].id = tmpId;
@@ -199,18 +225,42 @@ export function consolidate(): ConsolidationReport {
     }
   }
 
+  const delStmt = db.prepare("DELETE FROM memories WHERE id = ?");
+  for (const id of toDelete) delStmt.run(id);
+
   let promoted = 0;
-  for (const rec of listMemories()) {
-    if (rec.recallCount >= 5 && rec.importance < 1) {
-      updateMemory(rec.id, { importance: Math.min(1, rec.importance + 0.1) });
-      promoted++;
+  const bumpPromotion = async () => {
+    for (const rec of listMemories()) {
+      if (rec.recallCount >= 5 && rec.importance < 1) {
+        await updateMemory(rec.id, { importance: Math.min(1, rec.importance + 0.1) });
+        promoted++;
+      }
+    }
+  };
+
+  let pruned = 0;
+  const pruneEnabled = process.env.RAG_PRUNE === "1" || process.env.RAG_PRUNE === "true";
+  if (pruneEnabled) {
+    const minImp = Number(process.env.RAG_PRUNE_IMPORTANCE ?? 0.2);
+    const maxAgeDays = Number(process.env.RAG_PRUNE_AGE_DAYS ?? 90);
+    const cutoff = nowMs() - maxAgeDays * 86_400_000;
+    const stale = db
+      .prepare("SELECT id FROM memories WHERE importance < ? AND recall_count = 0 AND created_at < ?")
+      .all(minImp, cutoff) as Array<{ id: string }>;
+    for (const s of stale) {
+      delStmt.run(s.id);
+      pruned++;
     }
   }
+
+  await bumpPromotion();
+  invalidateVectorCache();
 
   const stats = memoryStats();
   return {
     removedDuplicates,
     promoted,
+    pruned,
     totals: { memories: stats.memories, tokens: stats.tokens },
   };
 }
@@ -223,13 +273,16 @@ export function memoryStats(): { memories: number; tokens: number; avgImportance
   const byType: Record<string, number> = {};
   for (const r of byTypeRows) byType[r.type] = r.c;
 
-  const totalTokens = listMemories().reduce((acc, m) => acc + estimateTokens(m.content), 0);
+  let totalTokens = 0;
+  for (const r of db.prepare("SELECT content FROM memories").all() as Array<{ content: string }>) {
+    totalTokens += estimateTokens(r.content);
+  }
 
   return { memories: count.c, tokens: totalTokens, avgImportance: avg.a, byType };
 }
 
-export function contextPrompt(query: string, topK = 6): { context: string; sources: MemoryRecallHit[] } {
-  const hits = recall(query, topK);
+export async function contextPrompt(query: string, topK = 6): Promise<{ context: string; sources: MemoryRecallHit[] }> {
+  const hits = await recall(query, topK);
   if (hits.length === 0) return { context: "", sources: [] };
   const lines = hits.map((h) => `[${h.type}, importance ${h.importance.toFixed(2)}] ${h.content}`);
   return { context: lines.join("\n"), sources: hits };

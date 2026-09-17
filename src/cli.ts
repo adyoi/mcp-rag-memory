@@ -17,7 +17,7 @@
  *   recall       <query>
  *   memory-list  [--type fact] [--tag x]
  *   memory-get   <id>
- *   memory-update <id> [--content ...] [--importance 0.8]
+ *   memory-update <id> [--content ...] [--importance 0.8] [--type fact] [--tag x]
  *   forget       <id>
  *   consolidate
  *   memory-stats
@@ -25,45 +25,52 @@
  *   stats                                       Everything
  */
 import { ingestText, ingestFile, ingestDirectory, searchDocs, retrieve, listDocuments, deleteDocument, documentStats } from "./rag/pipeline.js";
-import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt } from "./memory/memory.js";
+import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt, MEMORY_TYPES } from "./memory/memory.js";
 import { closeDB, STORAGE_DIR } from "./db/database.js";
 import * as fs from "fs";
 
-function main() {
+async function main() {
   const [, , cmd, ...rest] = process.argv;
   if (!cmd) {
-    console.error("Logging with npm run cli -- <command> ...");
+    console.error("Usage: npm run cli -- <command> ...");
     console.error(helpText());
     process.exit(1);
   }
-  run(cmd, rest);
+  await run(cmd, rest);
+  closeDB();
 }
 
 function helpText(): string {
   return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats`;
 }
 
-function run(cmd: string, args: string[]) {
+function assertMemoryType(type: string): asserts type is (typeof MEMORY_TYPES)[number] {
+  if (!MEMORY_TYPES.includes(type as (typeof MEMORY_TYPES)[number])) {
+    throw new Error(`Invalid memory type "${type}". Valid: ${MEMORY_TYPES.join(", ")}`);
+  }
+}
+
+async function run(cmd: string, args: string[]) {
   let out: unknown;
   try {
     switch (cmd) {
       case "ingest-text": {
         const [title, fileOrDash] = args;
         const content = fileOrDash === "-" ? fs.readFileSync(0, "utf-8") : fs.readFileSync(fileOrDash, "utf-8");
-        out = ingestText(content, title ?? fileOrDash ?? "untitled");
+        out = await ingestText(content, title ?? fileOrDash ?? "untitled");
         break;
       }
       case "ingest-file":
-        out = ingestFile(args[0]);
+        out = await ingestFile(args[0]);
         break;
       case "ingest-dir":
-        out = ingestDirectory(args[0], { recursive: true });
+        out = await ingestDirectory(args[0], { recursive: true });
         break;
       case "search":
-        out = searchDocs(args.join(" "));
+        out = await searchDocs(args.join(" "));
         break;
       case "retrieve":
-        out = retrieve(args.join(" "));
+        out = await retrieve(args.join(" "));
         break;
       case "docs":
         out = listDocuments();
@@ -76,16 +83,18 @@ function run(cmd: string, args: string[]) {
         break;
       case "remember": {
         const parsed = parseOpts(args);
-        out = remember({
+        const type = parsed.opts.type ?? "fact";
+        assertMemoryType(type);
+        out = await remember({
           content: parsed.positional.join(" "),
-          type: (parsed.opts.type as never) ?? "fact",
+          type,
           importance: parsed.opts.importance !== undefined ? Number(parsed.opts.importance) : 0.5,
           tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
       }
       case "recall":
-        out = recall(args.join(" "));
+        out = await recall(args.join(" "));
         break;
       case "memory-list": {
         const parsed = parseOpts(args);
@@ -102,10 +111,17 @@ function run(cmd: string, args: string[]) {
       case "memory-update": {
         const [id, ...restArgs] = args;
         const parsed = parseOpts(restArgs);
-        out = updateMemory(id, {
-          content: parsed.positional.length ? parsed.positional.join(" ") : undefined,
+        const type = parsed.opts.type ?? "fact";
+        assertMemoryType(type);
+        out = await updateMemory(id, {
+          content: parsed.opts.content && parsed.opts.content !== "true"
+            ? parsed.opts.content
+            : parsed.positional.length
+              ? parsed.positional.join(" ")
+              : undefined,
           importance: parsed.opts.importance !== undefined ? Number(parsed.opts.importance) : undefined,
-          type: parsed.opts.type as never,
+          type,
+          tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
       }
@@ -113,13 +129,13 @@ function run(cmd: string, args: string[]) {
         out = forget(args[0]);
         break;
       case "consolidate":
-        out = consolidate();
+        out = await consolidate();
         break;
       case "memory-stats":
         out = memoryStats();
         break;
       case "mem-context":
-        out = contextPrompt(args.join(" "));
+        out = await contextPrompt(args.join(" "));
         break;
       case "stats":
         out = { documents: documentStats(), memories: memoryStats(), dbDir: STORAGE_DIR };
@@ -134,7 +150,6 @@ function run(cmd: string, args: string[]) {
     process.exit(1);
   }
   console.log(JSON.stringify(out, null, 2));
-  closeDB();
 }
 
 function parseOpts(args: string[]): { positional: string[]; opts: Record<string, string> } {
@@ -158,4 +173,7 @@ function parseOpts(args: string[]): { positional: string[]; opts: Record<string,
   return { positional, opts };
 }
 
-main();
+main().catch((e) => {
+  console.error(`Error: ${(e as Error).message}`);
+  process.exit(1);
+});

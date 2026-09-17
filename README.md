@@ -14,18 +14,31 @@ context **across sessions**.
 ## What it does
 
 - **RAG** — ingest documents (text / files / whole directories), chunk + embed locally, store in SQLite, and semantically retrieve relevant context.
-- **Context Management** — `remember` facts/decisions/preferences, `recall` them later, rate by importance, consolidate duplicates, filter by type/tag.
-- **Zero external APIs** — local hashing-embedder (1024-dim), built-in `node:sqlite`. Works fully offline.
+- **Hybrid search** — FTS5 BM25 keyword hits fused with vector similarity (reciprocal-rank fusion). Tunable `SEARCH_MODE=hybrid|vector|keyword`.
+- **Context Management** — `remember` facts/decisions/preferences, `recall` them later (score-decayed by staleness), rate by importance, consolidate duplicates, filter by type/tag.
+- **Zero external APIs by default** — local hashing-embedder (1024-dim), built-in `node:sqlite`. Works fully offline. Optional `EMBEDDING_PROVIDER=transformers` for a higher-quality ONNX model.
+- **Safe ingestion** — content-hash deduplication, file size guard (`RAG_MAX_FILE_MB`) and an opt-in path allowlist (`RAG_ALLOWED_DIRS`).
 - **MCP server** — runs on stdio, 18 tools.
 
 ## Quick start
 
 ```bash
 npm install
-npm test                 # 66 checks: unit + MCP round-trip via SDK client
+npm test                 # 92 checks: unit + MCP round-trip via SDK client
 npm run build            # compile to dist/
 npm run cli -- stats     # CLI playground
 ```
+
+### Run from npm (npx)
+
+Install or run directly from the npm package — no `tsx`, no source checkout:
+
+```bash
+npx mcp-rag-memory
+```
+
+Point your MCP client at `npx mcp-rag-memory` (the published `bin`), or
+at the local dev entry: `node --import tsx src/mcp/rag-server.ts`.
 
 ## Works with any MCP client
 
@@ -88,9 +101,9 @@ Desktop. No `cwd` needed — use absolute paths for the entry file and DB.
 }
 ```
 
-> Tip: define a custom command to reuse anywhere, e.g.
-> `mcp-rag-memory` pointing at
-> `node --import tsx <abs-path>/src/mcp/rag-server.ts`.
+> Tip: once published (or installed), just point every client at
+> `npx mcp-rag-memory` — no `tsx`, no absolute paths, no local checkout.
+> Locally you can still use `node --import tsx <abs-path>/src/mcp/rag-server.ts`.
 
 ## opencode configuration
 
@@ -161,16 +174,16 @@ Restart opencode after any config change.
 
 | Group | Tool | Purpose |
 |-------|------|---------|
-| System | `system_stats` | DB dir, doc/memory counts |
-| RAG ingest | `rag_ingest_text` | Store text as a knowledge document |
+| System | `system_stats` | DB dir, embedding backend, doc/memory counts |
+| RAG ingest | `rag_ingest_text` | Store text as a knowledge document (dedup-aware) |
 | | `rag_ingest_file` | Store a file (`content_type` auto-detected) |
 | | `rag_ingest_dir` | Recursively ingest source files |
-| RAG query | `rag_search` | Semantic search, ranked chunks + scores |
+| RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores |
 | | `rag_retrieve` | Ready-to-inject context block with token count |
 | RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory |
-| | `rag_delete_document` | Remove a document + chunks |
+| | `rag_delete_document` | Remove a document + chunks + FTS rows |
 | Memory | `memory_remember` | Save long-term memory (type/importance/tags) |
-| | `memory_recall` | Semantic memory search (updates recall count) |
+| | `memory_recall` | Semantic memory search (decay + recall count) |
 | | `memory_context` | Compact context block from memories for prompts |
 | | `memory_list`, `memory_get`, `memory_update`, `memory_forget` | CRUD |
 | | `memory_consolidate` | Dedupe near-identical + promote hot memories |
@@ -211,20 +224,35 @@ npm run cli -- mem-context "database"
 
 ```
 src/
-├── db/database.ts          node:sqlite (documents, chunks, memories)
+├── db/database.ts          node:sqlite (documents, chunks, memories, chunks_fts, meta)
 ├── rag/
 │   ├── embedder.ts         local hashing embedder (1024-d, FNV-1a, n-grams)
+│   ├── embeddings.ts       provider layer: local | transformers (optional dep)
 │   ├── chunker.ts          paragraph/code-aware chunking with overlap
-│   ├── vector-search.ts    cosine similarity brute-force
-│   └── pipeline.ts         ingest / search / retrieve / document mgmt
-├── memory/memory.ts        remember / recall / consolidate + stats
-├── mcp/rag-server.ts       MCP server (18 tools, stdio)
+│   ├── vector-search.ts    vector cache + FTS5 BM25 + RRF hybrid scoring
+│   └── pipeline.ts         async ingest/search/retrieve, dedup, guards, doc mgmt
+├── memory/memory.ts        remember / recall / consolidate + decay + prune
+├── mcp/rag-server.ts       MCP server (18 tools, stdio, npm bin)
 ├── cli.ts                  CLI playground
-├── test/test-all.ts        full test suite (unit + MCP round-trip)
-└── types/                  ambient type declarations
+└── test/test-all.ts        full test suite (unit + MCP round-trip)
 ```
 
 Data lives in `.rag-data/rag.sqlite` (git-ignored).
+
+## Configuration (env vars)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RAG_DB_DIR` | `.rag-data` | Where the SQLite store lives |
+| `SEARCH_MODE` | `hybrid` | `hybrid` \| `vector` \| `keyword` |
+| `EMBEDDING_PROVIDER` | `local` | `local` (zero-dep) \| `transformers` (needs optional `@huggingface/transformers`) |
+| `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | Transformers model name |
+| `RAG_MAX_FILE_MB` | `10` | Reject files larger than this |
+| `RAG_ALLOWED_DIRS` | *(unset = anywhere)* | Semicolon/pipe/comma-separated allowed ingest roots |
+| `RAG_MEMORY_HALF_LIFE_DAYS` | `14` | Recall score decay half-life |
+| `RAG_PRUNE` | `0` | Set `1` to allow `consolidate` to delete non-essential memories |
+| `RAG_PRUNE_IMPORTANCE` | `0.2` | Delete memories below this importance |
+| `RAG_PRUNE_AGE_DAYS` | `90` | ...and older than this (never-recalled only) |
 
 ## Testing
 

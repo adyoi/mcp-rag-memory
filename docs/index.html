@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mcp-rag-memory — A memory for your AI buddies</title>
-<meta name="description" content="RAG + context management MCP server: persistent memory, vector search, zero APIs. Works with any MCP client, fully offline.">
+<title>mcp-rag-memory — Memori untuk AI kamu</title>
+<meta name="description" content="Server MCP RAG + manajemen konteks: memori persisten, pencarian vektor, tanpa API. Bekerja dengan MCP client apa pun, sepenuhnya offline.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Comic+Neue&display=swap">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Comic+Neue:wght@400;700&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
@@ -39,12 +39,7 @@
 
   .wrap { max-width: 920px; margin: 0 auto; padding: 20px 20px 80px; position: relative; }
 
-  /* ─────────────────────── hero ─────────────────────── */
-  .hero {
-    text-align: center;
-    padding: 40px 0 30px;
-    position: relative;
-  }
+  .hero { text-align: center; padding: 40px 0 30px; position: relative; }
   .hero h1 {
     font-family: 'Baloo 2', cursive;
     font-size: clamp(2.2rem, 6vw, 3.6rem);
@@ -59,34 +54,27 @@
   .hero .sub-bubble {
     display: inline-block;
     background: var(--paper);
-    border: 3px solid var(--ink);
-    border-radius: 24px;
+    border: 3px solid var(--ink); border-radius: 24px;
     padding: 12px 24px;
-    font-weight: 700;
-    font-size: 1.05rem;
-    max-width: 560px;
+    font-weight: 700; font-size: 1.05rem;
+    max-width: 620px;
     transform: rotate(1deg);
     position: relative;
     box-shadow: 4px 4px 0 var(--ink);
   }
   .hero .sub-bubble::after {
     content: '';
-    position: absolute;
-    bottom: -18px; left: 60px;
+    position: absolute; bottom: -18px; left: 60px;
     border: 10px solid transparent;
     border-top-color: var(--paper);
     filter: drop-shadow(0 3px 0 var(--ink));
   }
   .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 26px; }
   .badge {
-    font-family: 'Baloo 2', cursive;
-    font-weight: 700;
-    font-size: .9rem;
+    font-family: 'Baloo 2', cursive; font-weight: 700; font-size: .9rem;
     background: var(--yellow);
-    border: 3px solid var(--ink);
-    border-radius: 14px;
-    padding: 6px 16px;
-    box-shadow: 3px 3px 0 var(--ink);
+    border: 3px solid var(--ink); border-radius: 14px;
+    padding: 6px 16px; box-shadow: 3px 3px 0 var(--ink);
     transform: rotate(var(--r, 0deg));
     transition: transform .15s;
   }
@@ -94,16 +82,8 @@
   .badge span { background: var(--ink); color: #fff; border-radius: 8px; padding: 0 6px; margin-right: 2px; }
 
   .clouds { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
-  .clouds span {
-    position: absolute;
-    width: 70px; height: 22px;
-    background: rgba(255,255,255,.85);
-    border-radius: 50px;
-  }
-  .clouds span::before, .clouds span::after {
-    content: '';
-    position: absolute; background: inherit; border-radius: 50%;
-  }
+  .clouds span { position: absolute; width: 70px; height: 22px; background: rgba(255,255,255,.85); border-radius: 50px; }
+  .clouds span::before, .clouds span::after { content: ''; position: absolute; background: inherit; border-radius: 50%; }
   .clouds span::before { width: 28px; height: 28px; top: -12px; left: 14px; }
   .clouds span::after { width: 20px; height: 20px; top: -7px; right: 12px; }
   .c1 { animation: drift 26s linear infinite; }
@@ -111,23 +91,15 @@
   .c3 { animation: drift 42s linear infinite; }
   @keyframes drift { from { margin-left: -120px; } to { margin-left: 100%; } }
 
-  /* ─────────────────────── sections ─────────────────────── */
   h2 {
     font-family: 'Baloo 2', cursive;
-    font-weight: 800;
-    font-size: 1.5rem;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    font-weight: 800; font-size: 1.5rem;
+    display: flex; align-items: center; gap: 10px;
     margin: 52px 0 18px;
   }
   h2 .emoji-badge {
-    background: var(--yellow);
-    border: 3px solid var(--ink);
-    border-radius: 12px;
-    padding: 2px 10px;
-    box-shadow: 3px 3px 0 var(--ink);
-    transform: rotate(-2deg);
+    background: var(--yellow); border: 3px solid var(--ink); border-radius: 12px;
+    padding: 2px 10px; box-shadow: 3px 3px 0 var(--ink); transform: rotate(-2deg);
   }
   h3 { font-family: 'Baloo 2', cursive; font-weight: 700; font-size: 1.1rem; color: var(--blue); margin: 24px 0 6px; }
 
@@ -141,46 +113,23 @@
   code {
     font-family: 'Comic Neue', monospace;
     font-weight: 700;
-    background: var(--paper);
-    border: 2px dashed var(--blue);
-    border-radius: 8px;
-    padding: 1px 8px;
-    font-size: .88em;
-    color: var(--blue);
-    white-space: nowrap;
+    background: var(--paper); border: 2px dashed var(--blue); border-radius: 8px;
+    padding: 1px 8px; font-size: .88em; color: var(--blue); white-space: nowrap;
   }
   pre {
-    background: var(--paper);
-    border: 3px solid var(--ink);
-    border-radius: 16px;
-    padding: 16px 20px;
-    overflow-x: auto;
-    position: relative;
-    box-shadow: 4px 4px 0 var(--ink);
-    max-width: 100%;
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 16px;
+    padding: 16px 20px; overflow-x: auto; position: relative;
+    box-shadow: 4px 4px 0 var(--ink); max-width: 100%;
   }
-  pre::before {
-    content: '✦ ✦ ✦';
-    color: var(--pink);
-    position: absolute; top: -14px; left: 16px;
-    background: var(--paper);
-    padding: 0 8px;
-    border-radius: 8px;
-    font-size: .75rem;
-  }
+  pre::before { content: '✦ ✦ ✦'; color: var(--pink); position: absolute; top: -14px; left: 16px; background: var(--paper); padding: 0 8px; border-radius: 8px; font-size: .75rem; }
   pre code { background: none; border: none; padding: 0; color: var(--ink); white-space: pre; }
 
-  /* ─────────────────────── cards ─────────────────────── */
   .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; margin: 20px 0; }
   .card {
-    background: var(--paper);
-    border: 3px solid var(--ink);
-    border-radius: 20px;
-    padding: 20px;
-    box-shadow: 5px 5px 0 var(--ink);
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 20px;
+    padding: 20px; box-shadow: 5px 5px 0 var(--ink);
     transform: rotate(var(--tilt, 0deg));
-    transition: transform .18s, box-shadow .18s;
-    position: relative;
+    transition: transform .18s, box-shadow .18s; position: relative;
   }
   .card:nth-child(odd) { --tilt: -1.2deg; }
   .card:nth-child(even) { --tilt: 1.2deg; }
@@ -188,130 +137,64 @@
   .card .icon { font-size: 2.2rem; line-height: 1; margin-bottom: 10px; }
   .card strong { font-family: 'Baloo 2', cursive; font-size: 1.05rem; color: var(--orange); }
   .card p { font-size: .92rem; margin-top: 4px; }
-
-  /* colorful card tops */
   .card.blue { border-top: 8px solid var(--blue); }
   .card.green { border-top: 8px solid var(--green); }
   .card.pink { border-top: 8px solid var(--pink); }
   .card.purple { border-top: 8px solid var(--purple); }
   .card.orange { border-top: 8px solid var(--orange); }
 
-  /* ─────────────────────── identity ─────────────────────── */
   .identity {
-    background: var(--yellow);
-    border: 3px solid var(--ink);
-    border-radius: 24px;
-    padding: 20px 24px;
-    margin: 16px 0;
-    box-shadow: 5px 5px 0 var(--ink);
-    transform: rotate(-.6deg);
-    position: relative;
+    background: var(--yellow); border: 3px solid var(--ink); border-radius: 24px;
+    padding: 20px 24px; margin: 16px 0;
+    box-shadow: 5px 5px 0 var(--ink); transform: rotate(-.6deg); position: relative;
   }
   .identity strong { font-family: 'Baloo 2', cursive; font-size: 1.2rem; color: var(--ink); }
-  .identity::before {
-    content: '🦸';
-    position: absolute;
-    top: -16px; right: -10px;
-    font-size: 2.4rem;
-    transform: rotate(12deg);
-  }
+  .identity::before { content: '🦸'; position: absolute; top: -16px; right: -10px; font-size: 2.4rem; transform: rotate(12deg); }
 
-  /* ─────────────────────── speech bubbles ─────────────────────── */
   .bubble {
-    background: #fff;
-    border: 3px solid var(--ink);
-    border-radius: 24px;
-    padding: 14px 20px;
-    margin: 10px 0 20px;
-    position: relative;
-    box-shadow: 4px 4px 0 var(--ink);
+    background: #fff; border: 3px solid var(--ink); border-radius: 24px;
+    padding: 14px 20px; margin: 10px 0 20px; position: relative; box-shadow: 4px 4px 0 var(--ink);
   }
-  .bubble::after {
-    content: '';
-    position: absolute;
-    left: 30px; bottom: -16px;
-    border: 9px solid transparent;
-    border-top-color: #fff;
-    filter: drop-shadow(0 2px 0 var(--ink));
-  }
+  .bubble::after { content: ''; position: absolute; left: 30px; bottom: -16px; border: 9px solid transparent; border-top-color: #fff; filter: drop-shadow(0 2px 0 var(--ink)); }
 
-  /* ─────────────────────── tools table ─────────────────────── */
   table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .95rem; }
-  th {
-    font-family: 'Baloo 2', cursive;
-    color: #fff;
-    background: var(--blue);
-    border: 3px solid var(--ink);
-    padding: 10px 12px;
-  }
+  th { font-family: 'Baloo 2', cursive; color: #fff; background: var(--blue); border: 3px solid var(--ink); padding: 10px 12px; }
   td { border: 3px solid var(--ink); padding: 9px 12px; background: var(--paper); }
   tr:hover td { background: var(--sky-light); }
   th:first-child { border-radius: 14px 0 0 0; }
   th:last-child { border-radius: 0 14px 0 0; }
 
-  /* ─────────────────────── arch chips ─────────────────────── */
   .arch { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
   .chip {
-    background: var(--paper);
-    border: 3px solid var(--ink);
-    border-radius: 16px;
-    padding: 12px 16px;
-    flex: 1 1 190px;
-    box-shadow: 4px 4px 0 var(--ink);
-    transform: rotate(var(--r, 0deg));
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 16px;
+    padding: 12px 16px; flex: 1 1 190px;
+    box-shadow: 4px 4px 0 var(--ink); transform: rotate(var(--r, 0deg));
   }
   .chip:nth-child(odd) { --r: -1deg; }
   .chip:nth-child(even) { --r: 1deg; }
   .chip .name { font-family: 'Baloo 2', cursive; font-weight: 700; color: var(--purple); }
   .chip .desc { font-size: .85rem; margin-top: 2px; }
 
-  /* ─────────────────────── workflow steps ─────────────────────── */
   .steps { display: flex; gap: 14px; flex-wrap: wrap; margin: 18px 0; }
   .step {
-    flex: 1 1 190px;
-    text-align: center;
-    background: var(--paper);
-    border: 3px solid var(--ink);
-    border-radius: 18px;
-    padding: 18px 14px;
-    box-shadow: 5px 5px 0 var(--ink);
+    flex: 1 1 190px; text-align: center;
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 18px;
+    padding: 18px 14px; box-shadow: 5px 5px 0 var(--ink);
   }
   .step .num {
-    font-family: 'Baloo 2', cursive;
-    font-weight: 800;
-    font-size: 1.4rem;
-    color: #fff;
-    background: var(--pink);
-    width: 44px; height: 44px;
-    line-height: 38px;
-    border-radius: 50%;
-    border: 3px solid var(--ink);
-    margin: 0 auto 10px;
-    box-shadow: 2px 2px 0 var(--ink);
+    font-family: 'Baloo 2', cursive; font-weight: 800; font-size: 1.4rem; color: #fff;
+    background: var(--pink); width: 44px; height: 44px; line-height: 38px; border-radius: 50%;
+    border: 3px solid var(--ink); margin: 0 auto 10px; box-shadow: 2px 2px 0 var(--ink);
   }
   .step strong { font-family: 'Baloo 2', cursive; font-size: 1.05rem; }
 
-  /* ─────────────────────── footer ─────────────────────── */
-  footer {
-    margin-top: 60px;
-    text-align: center;
-    font-weight: 700;
-    color: var(--ink);
-  }
+  footer { margin-top: 60px; text-align: center; font-weight: 700; color: var(--ink); }
   footer .sticker {
-    display: inline-block;
-    background: var(--green);
-    border: 3px solid var(--ink);
-    border-radius: 14px;
-    padding: 8px 20px;
-    box-shadow: 3px 3px 0 var(--ink);
-    transform: rotate(-1.5deg);
+    display: inline-block; background: var(--green); border: 3px solid var(--ink); border-radius: 14px;
+    padding: 8px 20px; box-shadow: 3px 3px 0 var(--ink); transform: rotate(-1.5deg);
   }
 
-  @keyframes wobble {
-    0%,100% { transform: rotate(-4deg); }
-    50% { transform: rotate(4deg); }
-  }
+  @keyframes wobble { 0%,100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
   .wobble { display: inline-block; animation: wobble 3s ease-in-out infinite; }
 
   @media (max-width: 600px) {
@@ -324,133 +207,133 @@
 <body>
 
 <div class="clouds">
-  <span class="c1" style="top:8%; "></span>
+  <span class="c1" style="top:8%;"></span>
   <span class="c2" style="top:20%; margin-left:60%;"></span>
   <span class="c3" style="top:12%;"></span>
 </div>
 
 <div class="wrap">
 
-  <!-- HERO -->
   <section class="hero">
-    <div style="font-family:'Baloo 2';font-weight:700;font-size:1rem;background:var(--pink);display:inline-block;border:3px solid var(--ink);border-radius:12px;padding:4px 14px;box-shadow:3px 3px 0 var(--ink);color:#fff;transform:rotate(-2deg)">
-      🚀 Offline · MCP Protocol · Zero APIs
-    </div>
+    <div style="font-family:'Baloo 2';font-weight:700;font-size:1rem;background:var(--pink);display:inline-block;border:3px solid var(--ink);border-radius:12px;padding:4px 14px;box-shadow:3px 3px 0 var(--ink);color:#fff;transform:rotate(-2deg)">🚀 Offline · Protokol MCP · Tanpa API</div>
     <h1>mcp-rag-memory</h1>
-    <div class="sub-bubble">Your AI buddy's long-term memory 🧠<br>
-      <span style="font-weight:400">RAG + context management — fully offline, no API keys!</span>
-    </div>
+    <div class="sub-bubble">Memori jangka panjang untuk AI kamu 🧠<br>RAG + manajemen konteks — offline penuh, tanpa API key!</div>
     <div class="badges">
-      <div class="badge" style="--r:-2deg"><span>Node</span> js</div>
+      <div class="badge" style="--r:-2deg"><span>Node</span>js</div>
       <div class="badge" style="--r:1.5deg"><span>TS</span> TypeScript</div>
       <div class="badge" style="--r:-1deg"><span>SQL</span> SQLite</div>
-      <div class="badge" style="--r:2deg">18 Tools</div>
-      <div class="badge" style="--r:-1.5deg">Works offline</div>
+      <div class="badge" style="--r:2deg"><span>18</span> Tools</div>
+      <div class="badge" style="--r:-1.5deg">Bisa offline</div>
     </div>
   </section>
 
-  <!-- IDENTITY -->
-  <h2><span class="emoji-badge">🦸</span> Who's the boss?</h2>
+  <h2><span class="emoji-badge">🦸</span>Siapa bosnya?</h2>
   <div class="identity">
     <strong>The Coder</strong> — <em>"I'm The Coder, Selamat datang dan Semoga perjalanan mu menyenangkan"</em>
-    <p style="font-size:.9rem;margin-top:6px">Saved as an importance-1.0 memory, tag <code>identity</code> — every session says hi to The Coder first 👋</p>
+    <p style="font-size:.9rem;margin-top:6px">Disimpan sebagai memori importance-1.0, tag <code>identity</code> — tiap sesi menyapa The Coder lebih dulu 👋</p>
   </div>
 
-  <!-- WHAT IT DOES -->
-  <h2><span class="emoji-badge">✨</span> What it does</h2>
+  <h2><span class="emoji-badge">✨</span>Fungsi utama</h2>
   <div class="card-grid">
     <div class="card blue">
       <div class="icon">🧠</div>
-      <strong>Context Memory</strong>
-      <p>Remember facts, decisions, preferences. Recall them later. Rate importance, squash duplicates!</p>
+      <strong>Memori Konteks</strong>
+      <p>Ingat fakta, keputusan, preferensi. Panggil lagi kapan saja. Rating pentingnya, satukan yang dobel!</p>
     </div>
     <div class="card green">
       <div class="icon">📚</div>
-      <strong>Document RAG</strong>
-      <p>Feed it docs → it chunks, embeds &amp; stores in SQLite → ask questions, get the right bits back.</p>
+      <strong>RAG Dokumen</strong>
+      <p>Kasih dokumen → dipecah &amp; di-embed &amp; disimpan di SQLite → tanya apa saja, dapat bagian yang tepat.</p>
     </div>
     <div class="card pink">
       <div class="icon">⚡</div>
-      <strong>Zero APIs</strong>
-      <p>1024-dim local hashing embedder, built-in <code>node:sqlite</code>. No cloud, no keys, no bill 💸</p>
+      <strong>Tanpa API</strong>
+      <p>Embedder hash lokal 1024-dim, node:sqlite bawaan. Tanpa cloud, tanpa key, tanpa tagihan 💸</p>
+    </div>
+    <div class="card pink">
+      <div class="icon">🔎</div>
+      <strong>Cari Hybrid</strong>
+      <p>BM25 (FTS5) + vektor digabung pakai RRF. Presisi kata kunci, paham makna — dua-duanya!</p>
     </div>
     <div class="card purple">
       <div class="icon">🔌</div>
-      <strong>Universal MCP</strong>
-      <p>Works with <strong>opencode, Claude Desktop, Cursor, VS Code</strong> — every MCP buddy, one memory.</p>
+      <strong>MCP Universal</strong>
+      <p>Mendukung opencode, Claude Desktop, Cursor, VS Code — satu memori untuk semua teman MCP.</p>
+    </div>
+    <div class="card green">
+      <div class="icon">🛡️</div>
+      <strong>Input Aman</strong>
+      <p>File gede ditolak (RAG_MAX_FILE_MB), path bisa di-batasi (RAG_ALLOWED_DIRS), dokumen dobel dideteksi.</p>
     </div>
   </div>
 
-  <!-- QUICK START -->
-  <h2><span class="emoji-badge">⚡</span> Quick start</h2>
-  <div class="bubble">3 easy commands and you're in business! 🎩</div>
+  <h2><span class="emoji-badge">⚡</span>Mulai cepat</h2>
+  <div class="bubble" style="width:max-content;max-width:100%">3 perintah mudah, langsung jalan! 🎩</div>
   <pre><code>npm install
-npm test                 # 66 checks: unit + MCP round-trip
-npm run build            # compile to dist/
-npm run cli -- stats     # CLI playground</code></pre>
+npm test                 # 92 cek: unit + round-trip MCP
+npm run build            # kompilasi ke dist/
+npm run cli -- stats     # playground CLI
+npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
 
-  <!-- COMPATIBILITY -->
-  <h2><span class="emoji-badge">🌍</span> One memory, every agent</h2>
+  <h2><span class="emoji-badge">🌍</span>Satu memori, semua agent</h2>
   <div class="card-grid">
     <div class="card blue">
       <div class="icon">⚡</div>
       <strong>opencode</strong>
-      <p>Global MCP config — remembers you in every project.</p>
+      <p>Config MCP global — ingat kamu di semua project.</p>
     </div>
     <div class="card purple">
       <div class="icon">🟣</div>
       <strong>Claude Desktop</strong>
-      <p><code>claude_desktop_config.json</code> → <code>mcpServers</code>.</p>
+      <p>claude_desktop_config.json → mcpServers.</p>
     </div>
     <div class="card pink">
       <div class="icon">🔵</div>
       <strong>Cursor / Windsurf</strong>
-      <p>Settings → MCP → Add server. Same trick works!</p>
+      <p>Settings → MCP → Add server. Trik yang sama jalan!</p>
     </div>
     <div class="card green">
       <div class="icon">🟦</div>
       <strong>VS Code</strong>
-      <p><code>.vscode/mcp.json</code> with <code>"type": "stdio"</code>.</p>
+      <p>.vscode/mcp.json dengan <code>"type": "stdio"</code>.</p>
     </div>
   </div>
-  <p style="font-size:.88rem">🧩 <strong>Pro tip:</strong> same command everywhere — <code>node --import tsx &lt;path&gt;/src/mcp/rag-server.ts</code>. Remember once, recall everywhere!</p>
+  <p style="font-size:.88rem">🧩 Tips: <strong>perintah sama di mana saja</strong> — <code>npx mcp-rag-memory</code> setelah `npm install -g` / publish, atau <code>node --import tsx &lt;path&gt;/src/mcp/rag-server.ts</code> buat dev lokal. Ingat sekali, panggil di mana saja!</p>
 
-  <!-- TOOLS -->
-  <h2><span class="emoji-badge">🧰</span> 18 MCP Tools</h2>
+  <h2><span class="emoji-badge">🧰</span>18 Tools MCP</h2>
   <table>
-    <tr><th>Group</th><th>Tool</th><th>Purpose</th></tr>
-    <tr><td>System</td><td><code>system_stats</code></td><td>DB dir, doc/memory counts</td></tr>
-    <tr><td>RAG Ingest</td><td><code>rag_ingest_text</code></td><td>Store raw text</td></tr>
-    <tr><td>RAG Ingest</td><td><code>rag_ingest_file</code></td><td>Store a file</td></tr>
-    <tr><td>RAG Ingest</td><td><code>rag_ingest_dir</code></td><td>Ingest a whole directory!</td></tr>
-    <tr><td>RAG Query</td><td><code>rag_search</code></td><td>Semantic search, ranked chunks</td></tr>
-    <tr><td>RAG Query</td><td><code>rag_retrieve</code></td><td>Ready-to-inject context block</td></tr>
-    <tr><td>RAG Docs</td><td><code>rag_list_documents</code></td><td>Document inventory</td></tr>
-    <tr><td>RAG Docs</td><td><code>rag_delete_document</code></td><td>Remove a document + chunks</td></tr>
-    <tr><td>Memory</td><td><code>memory_remember</code></td><td>Save long-term memory</td></tr>
-    <tr><td>Memory</td><td><code>memory_recall</code></td><td>Semantic memory search</td></tr>
-    <tr><td>Memory</td><td><code>memory_context</code></td><td>Compact block for prompts</td></tr>
-    <tr><td>Memory</td><td><code>memory_list/get/update/forget</code></td><td>Full CRUD</td></tr>
-    <tr><td>Memory</td><td><code>memory_consolidate</code></td><td>Dedupe + promote hot memories</td></tr>
-    <tr><td>Memory</td><td><code>memory_stats</code></td><td>Counts, tokens, avg importance</td></tr>
+    <tr><th>Grup</th><th>Tool</th><th>Fungsi</th></tr>
+    <tr><td>Sistem</td><td><code>system_stats</code></td><td>Lokasi DB, backend embedding, jumlah dok/memori</td></tr>
+    <tr><td rowspan="3">RAG Input</td><td><code>rag_ingest_text</code></td><td>Simpan teks mentah (deteksi dobel otomatis)</td></tr>
+    <tr><td><code>rag_ingest_file</code></td><td>Simpan sebuah file</td></tr>
+    <tr><td><code>rag_ingest_dir</code></td><td>Input satu folder penuh!</td></tr>
+    <tr><td rowspan="2">RAG Cari</td><td><code>rag_search</code></td><td>Cari hybrid (BM25 + vektor), chunk terurut</td></tr>
+    <tr><td><code>rag_retrieve</code></td><td>Blok konteks siap-suntik</td></tr>
+    <tr><td rowspan="2">RAG Dokumen</td><td><code>rag_list_documents</code></td><td>Inventaris dokumen</td></tr>
+    <tr><td><code>rag_delete_document</code></td><td>Hapus dokumen + chunk</td></tr>
+    <tr><td rowspan="6">Memori</td><td><code>memory_remember</code></td><td>Simpan memori jangka panjang</td></tr>
+    <tr><td><code>memory_recall</code></td><td>Cari memori semantik</td></tr>
+    <tr><td><code>memory_context</code></td><td>Blok ringkas untuk prompt</td></tr>
+    <tr><td><code>memory_list/get/update/forget</code></td><td>CRUD lengkap</td></tr>
+    <tr><td><code>memory_consolidate</code></td><td>Dedupe + promosi memori panas</td></tr>
+    <tr><td><code>memory_stats</code></td><td>Jumlah, token, rata-rata penting</td></tr>
   </table>
 
-  <!-- ARCHITECTURE -->
-  <h2><span class="emoji-badge">🏗️</span> Architecture</h2>
+  <h2><span class="emoji-badge">🏗️</span>Arsitektur</h2>
   <div class="arch">
-    <div class="chip"><div class="name">database.ts</div><div class="desc">node:sqlite — docs, chunks, memories</div></div>
-    <div class="chip"><div class="name">embedder.ts</div><div class="desc">1024-dim local hashing (FNV-1a + n-grams)</div></div>
-    <div class="chip"><div class="name">chunker.ts</div><div class="desc">Paragraph/code-aware chunking w/ overlap</div></div>
-    <div class="chip"><div class="name">vector-search.ts</div><div class="desc">Cosine similarity brute-force</div></div>
-    <div class="chip"><div class="name">pipeline.ts</div><div class="desc">Ingest / search / retrieve / doc mgmt</div></div>
-    <div class="chip"><div class="name">memory.ts</div><div class="desc">Remember / recall / consolidate / stats</div></div>
-    <div class="chip"><div class="name">rag-server.ts</div><div class="desc">MCP server — 18 tools, stdio transport</div></div>
+    <div class="chip"><div class="name">database.ts</div><div class="desc">node:sqlite — dok, chunk, memori, chunks_fts, meta</div></div>
+    <div class="chip"><div class="name">embedder.ts</div><div class="desc">Hash lokal 1024-dim (FNV-1a + n-gram)</div></div>
+    <div class="chip"><div class="name">embeddings.ts</div><div class="desc">Lapisan provider: local | transformers (opsional)</div></div>
+    <div class="chip"><div class="name">chunker.ts</div><div class="desc">Chunking sadar paragraf/kode + overlap</div></div>
+    <div class="chip"><div class="name">vector-search.ts</div><div class="desc">Cache vektor + FTS5 BM25 + gabung RRF</div></div>
+    <div class="chip"><div class="name">pipeline.ts</div><div class="desc">Ingest async / dedup / guard / kelola dok</div></div>
+    <div class="chip"><div class="name">memory.ts</div><div class="desc">Remember / recall (decay) / consolidate / prune</div></div>
+    <div class="chip"><div class="name">rag-server.ts</div><div class="desc">Server MCP — 18 tools, transport stdio</div></div>
   </div>
-  <p style="font-size:.88rem">🍪 Data lives in <code>.rag-data/rag.sqlite</code> (git-ignored, never pushes your memories!).</p>
+  <p style="font-size:.88rem">🍪 Data tersimpan di <code>.rag-data/rag.sqlite</code> (di-gitignore, memori tidak pernah ter-push!)</p>
 
-  <!-- CONFIG -->
-  <h2><span class="emoji-badge">🎛️</span> Configuration</h2>
-  <h3>🔥 opencode (global)</h3>
+  <h2><span class="emoji-badge">🎛️</span>Konfigurasi</h2>
+  <h3>🔥 opencode <span style="color:var(--purple)">(global)</span></h3>
   <pre><code>{
   "mcp": {
     "rag-memory": {
@@ -472,24 +355,34 @@ npm run cli -- stats     # CLI playground</code></pre>
   }
 }</code></pre>
 
-  <!-- WORKFLOW -->
-  <h2><span class="emoji-badge">🎬</span> How it flows</h2>
+  <h3>🔧 Variabel lingkungan penting</h3>
+  <table>
+    <tr><th>Variabel</th><th>Default</th><th>Guna</th></tr>
+    <tr><td><code>RAG_DB_DIR</code></td><td><code>.rag-data</code></td><td>Lokasi penyimpanan SQLite</td></tr>
+    <tr><td><code>SEARCH_MODE</code></td><td><code>hybrid</code></td><td><code>hybrid</code> | <code>vector</code> | <code>keyword</code></td></tr>
+    <tr><td><code>EMBEDDING_PROVIDER</code></td><td><code>local</code></td><td><code>local</code> (tanpa deps) | <code>transformers</code></td></tr>
+    <tr><td><code>RAG_MAX_FILE_MB</code></td><td><code>10</code></td><td>Batas ukuran file yang boleh di-ingest</td></tr>
+    <tr><td><code>RAG_ALLOWED_DIRS</code></td><td><i>(bebas)</i></td><td>Daftar folder yang diizinkan: <code>; | ,</code></td></tr>
+    <tr><td><code>RAG_PRUNE</code></td><td><code>0</code></td><td><code>1</code> = konsolidasi boleh hapus memori basi</td></tr>
+  </table>
+
+  <h2><span class="emoji-badge">🎬</span>Alurnya</h2>
   <div class="steps">
-    <div class="step"><div class="num">1</div><strong>Save</strong><p style="font-size:.88rem"><code>rag_ingest_*</code><br><code>memory_remember</code></p></div>
-    <div class="step"><div class="num">2</div><strong>Recall</strong><p style="font-size:.88rem"><code>memory_context</code><br><code>rag_retrieve</code></p></div>
-    <div class="step"><div class="num">3</div><strong>Act</strong><p style="font-size:.88rem">Inject context → let your AI shine ✨</p></div>
+    <div class="step"><div class="num">1</div><strong>Simpan</strong><p style="font-size:.88rem"><code>rag_ingest_*</code><br><code>memory_remember</code></p></div>
+    <div class="step"><div class="num">2</div><strong>Panggil</strong><p style="font-size:.88rem"><code>memory_context</code><br><code>rag_retrieve</code></p></div>
+    <div class="step"><div class="num">3</div><strong>Eksekusi</strong><p style="font-size:.88rem">Suntik konteks → biar AI kamu makin cemerlang ✨</p></div>
   </div>
 
-  <!-- FOOTER -->
   <footer>
     <p>
       <a href="https://github.com/adyoi/mcp-rag-memory">GitHub</a> ·
-      <a href="https://github.com/adyoi/mcp-rag-memory#readme">Full README</a> ·
+      <a href="https://github.com/adyoi/mcp-rag-memory#readme">README Lengkap</a> ·
       <a href="https://github.com/adyoi/mcp-rag-memory/issues">Issues</a>
     </p>
-    <div class="sticker" style="margin-top:14px">Made with 💛 + TypeScript · No cloud · No API keys</div>
+    <div class="sticker" style="margin-top:14px">Dibuat dengan 💛 + TypeScript · Tanpa cloud · Tanpa API key</div>
   </footer>
 
 </div>
+
 </body>
 </html>

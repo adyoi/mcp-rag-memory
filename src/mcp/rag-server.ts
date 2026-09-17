@@ -1,8 +1,10 @@
+#!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as path from "path";
 import { STORAGE_DIR } from "../db/database.js";
+import { embeddingInfo } from "../rag/embeddings.js";
 import {
   ingestText,
   ingestFile,
@@ -38,7 +40,7 @@ const server = new McpServer({
 server.registerTool(
   "system_stats",
   {
-    description: "Get overall system stats: DB location, documents, chunks, memories, tokens",
+    description: "Get overall system stats: DB location, documents, chunks, memories, tokens, embedding backend",
     inputSchema: {},
   },
   async () => {
@@ -49,7 +51,7 @@ server.registerTool(
         {
           type: "text",
           text: JSON.stringify(
-            { dbDir: STORAGE_DIR, documents: docs, memories: mem },
+            { dbDir: STORAGE_DIR, embedding: embeddingInfo(), documents: docs, memories: mem },
             null,
             2
           ),
@@ -75,7 +77,7 @@ server.registerTool(
     },
   },
   async (args: { content: string; title: string; contentType?: string; metadata?: Record<string, unknown> }) => {
-    const res = ingestText(args.content, args.title, {
+    const res = await ingestText(args.content, args.title, {
       contentType: args.contentType,
       metadata: args.metadata,
     });
@@ -93,7 +95,7 @@ server.registerTool(
     },
   },
   async (args: { path: string; metadata?: Record<string, unknown> }) => {
-    const res = ingestFile(args.path, { metadata: args.metadata });
+    const res = await ingestFile(args.path, { metadata: args.metadata });
     return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
   }
 );
@@ -109,7 +111,7 @@ server.registerTool(
     },
   },
   async (args: { path: string; recursive?: boolean; extensions?: string[] }) => {
-    const res = ingestDirectory(args.path, { recursive: args.recursive, extensions: args.extensions });
+    const res = await ingestDirectory(args.path, { recursive: args.recursive, extensions: args.extensions });
     return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
   }
 );
@@ -121,7 +123,7 @@ server.registerTool(
 server.registerTool(
   "rag_search",
   {
-    description: "Semantic search over stored documents. Returns chunks ranked by relevance with scores.",
+    description: "Hybrid semantic + keyword search over stored documents. Returns chunks ranked by relevance with scores.",
     inputSchema: {
       query: z.string().min(1),
       top_k: z.number().int().min(1).max(50).optional().default(10),
@@ -129,7 +131,7 @@ server.registerTool(
     },
   },
   async (args: { query: string; top_k?: number; min_score?: number }) => {
-    const hits = searchDocs(args.query, args.top_k ?? 10, args.min_score ?? 0.08);
+    const hits = await searchDocs(args.query, args.top_k ?? 10, args.min_score ?? 0.08);
     return {
       content: [{ type: "text", text: JSON.stringify(hits, null, 2) }],
     };
@@ -148,7 +150,7 @@ server.registerTool(
     },
   },
   async (args: { query: string; top_k?: number; min_score?: number }) => {
-    const res = retrieve(args.query, args.top_k ?? 6, args.min_score ?? 0.08);
+    const res = await retrieve(args.query, args.top_k ?? 6, args.min_score ?? 0.08);
     if (res.chunks.length === 0) {
       return { content: [{ type: "text", text: "No relevant context found." }] };
     }
@@ -222,7 +224,7 @@ server.registerTool(
     },
   },
   async (args: { content: string; type?: string; importance?: number; tags?: string[] }) => {
-    const rec = remember({
+    const rec = await remember({
       content: args.content,
       type: args.type as never,
       importance: args.importance,
@@ -243,7 +245,7 @@ server.registerTool(
     },
   },
   async (args: { query: string; top_k?: number; min_score?: number }) => {
-    const hits = recall(args.query, args.top_k ?? 8, args.min_score ?? 0.1);
+    const hits = await recall(args.query, args.top_k ?? 8, args.min_score ?? 0.1);
     return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }] };
   }
 );
@@ -298,7 +300,7 @@ server.registerTool(
     },
   },
   async (args: { id: string; content?: string; type?: string; importance?: number; tags?: string[] }) => {
-    const rec = updateMemory(args.id, {
+    const rec = await updateMemory(args.id, {
       content: args.content,
       type: args.type as never,
       importance: args.importance,
@@ -326,11 +328,11 @@ server.registerTool(
 server.registerTool(
   "memory_consolidate",
   {
-    description: "Deduplicate near-identical memories and boost importance of frequently-used ones",
+    description: "Deduplicate near-identical memories, boost frequently-used ones, and optionally prune stale memories (enable with env RAG_PRUNE=1)",
     inputSchema: {},
   },
   async () => {
-    const res = consolidate();
+    const res = await consolidate();
     return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
   }
 );
@@ -356,7 +358,7 @@ server.registerTool(
     },
   },
   async (args: { topic: string; top_k?: number }) => {
-    const { context, sources } = contextPrompt(args.topic, args.top_k ?? 6);
+    const { context, sources } = await contextPrompt(args.topic, args.top_k ?? 6);
     if (!context) return { content: [{ type: "text", text: "No relevant memories found." }] };
     return {
       content: [
