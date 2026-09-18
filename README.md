@@ -170,7 +170,7 @@ the global config to apply to every project.
 
 Restart opencode after any config change.
 
-## MCP tools (18)
+## MCP tools (19)
 
 | Group | Tool | Purpose |
 |-------|------|---------|
@@ -182,6 +182,7 @@ Restart opencode after any config change.
 | | `rag_retrieve` | Ready-to-inject context block with token count |
 | RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory |
 | | `rag_delete_document` | Remove a document + chunks + FTS rows |
+| Session sync | `rag_sync_session` | Ingest an opencode session's user inputs (or the latest in a workspace) |
 | Memory | `memory_remember` | Save long-term memory (type/importance/tags) |
 | | `memory_recall` | Semantic memory search (decay + recall count) |
 | | `memory_context` | Compact context block from memories for prompts |
@@ -220,6 +221,34 @@ npm run cli -- search "vector similarity"
 npm run cli -- mem-context "database"
 ```
 
+## Auto-save session inputs
+
+Every user input you type in opencode becomes searchable in the RAG store —
+new, untouched, friendly to your existing long-term memories. Three layers:
+
+1. **Plugin (real-time, debounced).** `.opencode/plugin/session-logger.ts`
+   watches message events and, at most once a minute, runs
+   `sync-latest` so the session you are typing in lands in the store.
+   Disable with `RAG_AUTOSYNC=0`.
+2. **CLI on demand.**
+   ```bash
+   npm run sync-latest -- --dir "D:/Project/my-app"   # latest session in a workspace
+   npm run sync-session -- ses_abc123                  # a specific session
+   npm run sync-logs                                    # .session-logs/*.jsonl (custom logs)
+   ```
+3. **MCP tool.** `rag_sync_session` exposes the same logic over MCP:
+   `{ "session_id": "..." }` or `{ "directory": "..." }` for the latest.
+
+How it works: sessions are read from opencode's own DB
+(`~/.local/share/opencode/opencode.db` + `opencode-local.db`, override with
+`OPENCODE_DB` / `OPENCODE_DB_LOCAL`), each user message becomes one small
+document (title `<session>-<ts>`, metadata `source: "opencode-db"`). Raw
+transcripts stay in opencode's DB; long-term **memories** are never mixed in.
+Re-runs are idempotent thanks to SHA-256 content-hash dedup, so plugging this
+into any scheduler is safe.
+
+The plugin needs an opencode restart to take effect.
+
 ## Architecture
 
 ```
@@ -231,9 +260,10 @@ src/
 │   ├── chunker.ts          paragraph/code-aware chunking with overlap
 │   ├── vector-search.ts    vector cache + FTS5 BM25 + RRF hybrid scoring
 │   └── pipeline.ts         async ingest/search/retrieve, dedup, guards, doc mgmt
+├── session/transcript.ts   read opencode sessions (global+local DB), ingest inputs
 ├── memory/memory.ts        remember / recall / consolidate + decay + prune
-├── mcp/rag-server.ts       MCP server (18 tools, stdio, npm bin)
-├── cli.ts                  CLI playground
+├── mcp/rag-server.ts       MCP server (19 tools, stdio, npm bin)
+├── cli.ts                  CLI playground (incl. sync-session / sync-latest / sync-logs)
 └── test/test-all.ts        full test suite (unit + MCP round-trip)
 ```
 
@@ -253,6 +283,8 @@ Data lives in `.rag-data/rag.sqlite` (git-ignored).
 | `RAG_PRUNE` | `0` | Set `1` to allow `consolidate` to delete non-essential memories |
 | `RAG_PRUNE_IMPORTANCE` | `0.2` | Delete memories below this importance |
 | `RAG_PRUNE_AGE_DAYS` | `90` | ...and older than this (never-recalled only) |
+| `RAG_AUTOSYNC` | `1` | Set `0` to disable the session-logger plugin's auto-sync |
+| `OPENCODE_DB` / `OPENCODE_DB_LOCAL` | `~/.local/share/opencode/*.db` | Where session transcripts are read from |
 
 ## Testing
 

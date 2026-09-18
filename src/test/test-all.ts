@@ -312,10 +312,10 @@ async function main() {
       "rag_search", "rag_retrieve", "rag_list_documents", "rag_document_stats",
       "rag_delete_document", "memory_remember", "memory_recall", "memory_list",
       "memory_get", "memory_update", "memory_forget", "memory_consolidate",
-      "memory_stats", "memory_context",
+      "memory_stats", "memory_context", "rag_sync_session",
     ];
     check("all tools registered", expected.every((t) => toolNames.includes(t)), `missing: ${expected.filter((t) => !toolNames.includes(t))}`);
-    check("exactly 18 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
+    check("exactly 19 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
 
     const sys = await client.callTool({ name: "system_stats", arguments: {} });
     const sysText = toolText(sys);
@@ -366,7 +366,45 @@ async function main() {
     try { await client.close(); } catch { /* ignore */ }
   }
 
-  /* ================== RESULTS ================== */
+  /* ================== 7. SESSION SYNC ================== */
+  console.log("\n=== 7. Session Sync (jsonl logs + transcript) ===");
+  const sess = await import("../session/transcript.js");
+
+  const logDir = path.join(TEST_DB, "session-logs");
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFile = path.join(logDir, "ses-demo.jsonl");
+  fs.writeFileSync(
+    logFile,
+    [
+      JSON.stringify({ ts: 1000, session: "ses-demo", content: "Session log line one about the flying birds of Java island." }),
+      JSON.stringify({ ts: 2000, session: "ses-demo", content: "Session log line two, a follow-up question about databases." }),
+      JSON.stringify({ ts: 3000, session: "ses-demo", content: "   " }),
+      "not-json-at-all",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const parsed = sess.readJsonl(logFile);
+  check("readJsonl parses valid lines only", parsed.length === 2, `got ${parsed.length}`);
+
+  const lr1 = await sess.ingestJsonlFile(logFile);
+  check("ingest-jsonl creates one doc per message", lr1.newDocs === 2, JSON.stringify(lr1));
+  check("blank/malformed lines skipped", lr1.messages === 2 && lr1.skipped === 0, JSON.stringify(lr1));
+
+  const lr2 = await sess.ingestJsonlFile(logFile);
+  check("re-run deduplicates by content-hash", lr2.deduplicated === 2 && lr2.newDocs === 0, JSON.stringify(lr2));
+
+  const ls = await rag.searchDocs("flying birds java", 5);
+  check("session log entries searchable", ls.some((h) => h.content.includes("flying")), JSON.stringify(ls[0]));
+
+  const ld = await sess.ingestLogDir(logDir);
+  check("ingest-logs-dir counts files and stays idempotent", ld.files === 1 && ld.newDocs === 0 && ld.deduplicated === 2, JSON.stringify(ld));
+
+  const withMeta = (await rag.listDocuments()).find((d) => (d as { title: string }).title.includes("ses-demo")) as { source?: string; metadata?: unknown };
+  check("listDocuments exposes source metadata", withMeta?.source === "session-log" && typeof withMeta?.metadata === "string", JSON.stringify(withMeta));
+
+  /* ================== 8. RESULTS ================== */
   console.log("\n=== RESULTS ===");
   console.log(`  Total:  ${passed + failed}`);
   console.log(`  Passed: ${passed}`);

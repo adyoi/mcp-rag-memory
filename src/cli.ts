@@ -23,9 +23,15 @@
  *   memory-stats
  *   mem-context  <topic>
  *   stats                                       Everything
+ *   sessions                                    List opencode sessions (recent first)
+ *   sync-session <sessionId> [--limit N]        Ingest a session's user inputs to RAG
+ *   sync-latest   [--limit N] [--dir PATH]      Ingest the most recent session (workspace-aware)
+ *   sync-logs    [dir]                          Ingest .session-logs/*.jsonl to RAG
+ *   ingest-jsonl <file>                         Ingest one jsonl log file
  */
 import { ingestText, ingestFile, ingestDirectory, searchDocs, retrieve, listDocuments, deleteDocument, documentStats } from "./rag/pipeline.js";
 import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt, MEMORY_TYPES } from "./memory/memory.js";
+import { ingestSession, ingestJsonlFile, ingestLogDir, ingestLatest, listOpenCodeSessions } from "./session/transcript.js";
 import { closeDB, STORAGE_DIR } from "./db/database.js";
 import * as fs from "fs";
 
@@ -41,7 +47,7 @@ async function main() {
 }
 
 function helpText(): string {
-  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats`;
+  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats|sessions|sync-session|sync-latest|sync-logs|ingest-jsonl`;
 }
 
 function assertMemoryType(type: string): asserts type is (typeof MEMORY_TYPES)[number] {
@@ -139,6 +145,31 @@ async function run(cmd: string, args: string[]) {
         break;
       case "stats":
         out = { documents: documentStats(), memories: memoryStats(), dbDir: STORAGE_DIR };
+        break;
+      case "sessions": {
+        const parsed = parseOpts(args);
+        out = listOpenCodeSessions(parsed.opts.limit ? Number(parsed.opts.limit) : 15);
+        break;
+      }
+      case "sync-session": {
+        const [id, ...restArgs] = args;
+        const parsed = parseOpts(restArgs);
+        if (!id) throw new Error("sync-session <sessionId> — run 'cli sessions' to list ids");
+        out = await ingestSession(id, { limit: parsed.opts.limit ? Number(parsed.opts.limit) : 0 });
+        break;
+      }
+      case "sync-latest": {
+        const parsed = parseOpts(args);
+        out = await ingestLatest({ limit: parsed.opts.limit ? Number(parsed.opts.limit) : 0, directory: parsed.opts.dir });
+        break;
+      }
+      case "sync-logs": {
+        const parsed = parseOpts(args);
+        out = await ingestLogDir(parsed.positional[0] ?? ".session-logs");
+        break;
+      }
+      case "ingest-jsonl":
+        out = await ingestJsonlFile(args[0]);
         break;
       default:
         console.error(`Unknown command: ${cmd}`);

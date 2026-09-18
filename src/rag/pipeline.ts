@@ -208,7 +208,7 @@ export function listDocuments(): Array<Record<string, unknown>> {
   const db = getDB();
   const rows = db
     .prepare(
-      `SELECT id, title, source, content_type, chunk_count, created_at, updated_at FROM documents ORDER BY updated_at DESC`
+      `SELECT id, title, source, content_type, chunk_count, created_at, updated_at, metadata FROM documents ORDER BY updated_at DESC`
     )
     .all() as unknown as Array<Record<string, unknown>>;
   return rows;
@@ -235,7 +235,7 @@ function guessContentType(file: string): string {
   const map: Record<string, string> = {
     ".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".jsx": "jsx", ".json": "json",
     ".md": "markdown", ".txt": "text", ".py": "python", ".go": "go", ".rs": "rust", ".toml": "toml",
-    ".yaml": "yaml", ".yml": "yaml", ".html": "html", ".css": "css", ".sql": "sql",
+    ".yaml": "yaml", ".yml": "yaml", ".html": "html", ".css": "css", ".sql": "sql", ".jsonl": "jsonl", ".log": "log",
   };
   return map[ext] ?? "text";
 }

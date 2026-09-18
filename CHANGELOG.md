@@ -2,6 +2,19 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [2.1.0] - 2026-09-17
+
+### Added
+- **Auto-save session inputs** — every user message typed in opencode can be ingested into the RAG store as searchable documents.
+  - `.opencode/plugin/session-logger.ts` (opencode plugin) auto-triggers `sync-latest` on message events (debounced 60 s, disable with `RAG_AUTOSYNC=0`).
+  - `src/session/transcript.ts` reads transcripts from opencode's global + local DB (`OPENCODE_DB` / `OPENCODE_DB_LOCAL` override); messages ingested one-doc-per-message with metadata `source: "opencode-db"`, idempotent via content-hash dedup.
+  - CLI: `sync-session <id>`, `sync-latest [--dir]`, `sync-logs [dir]`, `sessions`, `ingest-jsonl`.
+  - MCP tool `rag_sync_session` exposes the same operation as an MCP call.
+- `listDocuments` now includes the `metadata` column; ingest content-type map covers `.jsonl` / `.log`.
+
+### Changed
+- MCP tool count 18 → 19; test suite 92 → 99 assertions.
+
 ## [2.0.0] - 2026-09-17
 
 ### Added

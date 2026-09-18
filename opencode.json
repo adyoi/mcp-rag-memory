@@ -3,6 +3,7 @@
   "model": "anthropic/claude-sonnet-4-6",
   "lsp": true,
   "instructions": [".opencode/instructions.md"],
+  "plugin": [".opencode/plugin/session-logger.ts"],
   "permission": {
     "edit": "allow",
     "bash": { "git *": "allow", "*": "ask" }

@@ -16,6 +16,11 @@ import {
   documentStats,
 } from "../rag/pipeline.js";
 import {
+  ingestSession as syncSession,
+  ingestLatest as syncLatest,
+  ingestLogDir as syncLogDir,
+} from "../session/transcript.js";
+import {
   remember,
   recall,
   listMemories,
@@ -30,7 +35,7 @@ import {
 
 const server = new McpServer({
   name: "rag-memory-server",
-  version: "2.0.0",
+  version: "2.1.0",
 });
 
 /* ------------------------------------------------------------------ */
@@ -210,6 +215,25 @@ server.registerTool(
 /* ------------------------------------------------------------------ */
 /* Context Management: memory                                          */
 /* ------------------------------------------------------------------ */
+
+server.registerTool(
+  "rag_sync_session",
+  {
+    description:
+      "Ingest an opencode session's user inputs (or the latest active session) into the RAG store as searchable documents. Use with the session id from opencode, or omit session_id and pass directory to auto-pick the most recent session in that workspace.",
+    inputSchema: {
+      session_id: z.string().optional().describe("opencode session id; omit to use the latest active session"),
+      directory: z.string().optional().describe("Workspace path used to pick the latest session when session_id is omitted"),
+      limit: z.number().int().min(1).optional().describe("Only ingest the first N user messages"),
+    },
+  },
+  async (args: { session_id?: string; directory?: string; limit?: number }) => {
+    const res = args.session_id
+      ? await syncSession(args.session_id, { limit: args.limit })
+      : await syncLatest({ limit: args.limit, directory: args.directory });
+    return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
+  }
+);
 
 server.registerTool(
   "memory_remember",

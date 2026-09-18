@@ -270,7 +270,7 @@
   <h2><span class="emoji-badge">⚡</span>Mulai cepat</h2>
   <div class="bubble" style="width:max-content;max-width:100%">3 perintah mudah, langsung jalan! 🎩</div>
   <pre><code>npm install
-npm test                 # 92 cek: unit + round-trip MCP
+npm test                 # 99 cek: unit + round-trip MCP
 npm run build            # kompilasi ke dist/
 npm run cli -- stats     # playground CLI
 npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
@@ -300,7 +300,7 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
   </div>
   <p style="font-size:.88rem">🧩 Tips: <strong>perintah sama di mana saja</strong> — <code>npx mcp-rag-memory</code> setelah `npm install -g` / publish, atau <code>node --import tsx &lt;path&gt;/src/mcp/rag-server.ts</code> buat dev lokal. Ingat sekali, panggil di mana saja!</p>
 
-  <h2><span class="emoji-badge">🧰</span>18 Tools MCP</h2>
+  <h2><span class="emoji-badge">🧰</span>19 Tools MCP</h2>
   <table>
     <tr><th>Grup</th><th>Tool</th><th>Fungsi</th></tr>
     <tr><td>Sistem</td><td><code>system_stats</code></td><td>Lokasi DB, backend embedding, jumlah dok/memori</td></tr>
@@ -311,6 +311,7 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
     <tr><td><code>rag_retrieve</code></td><td>Blok konteks siap-suntik</td></tr>
     <tr><td rowspan="2">RAG Dokumen</td><td><code>rag_list_documents</code></td><td>Inventaris dokumen</td></tr>
     <tr><td><code>rag_delete_document</code></td><td>Hapus dokumen + chunk</td></tr>
+    <tr><td>Sinkron Sesi</td><td><code>rag_sync_session</code></td><td>Input sesi opencode masuk store RAG</td></tr>
     <tr><td rowspan="6">Memori</td><td><code>memory_remember</code></td><td>Simpan memori jangka panjang</td></tr>
     <tr><td><code>memory_recall</code></td><td>Cari memori semantik</td></tr>
     <tr><td><code>memory_context</code></td><td>Blok ringkas untuk prompt</td></tr>
@@ -319,16 +320,25 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
     <tr><td><code>memory_stats</code></td><td>Jumlah, token, rata-rata penting</td></tr>
   </table>
 
+  <h2><span class="emoji-badge">💾</span>Input sesi tersimpan otomatis</h2>
+  <p>Setiap pesan yang kamu ketik di opencode bisa ikut masuk store RAG sebagai dokumen yang bisa dicari — tanpa mencampur memori jangka panjang yang kurasi.</p>
+  <pre><code># plugin ".opencode/plugin/session-logger.ts" auto-sync tiap menit (RAG_AUTOSYNC=0 utk matikan)
+npm run sync-latest -- --dir "D:/Project/my-app"   # sesi terbaru di workspace itu
+npm run sync-session -- ses_abc123                  # sesi tertentu
+npm run cli -- sessions                             # daftar sesi terbuka</code></pre>
+  <p style="font-size:.88rem">Data dibaca dari DB opencode sendiri (<code>~/.local/share/opencode/opencode.db</code>), aman karena dedup SHA-256 — jalan berulang-ulang tidak bikin dobel. Tool MCP <code>rag_sync_session</code> nyediain akses yang sama lewat MCP.</p>
+
   <h2><span class="emoji-badge">🏗️</span>Arsitektur</h2>
   <div class="arch">
     <div class="chip"><div class="name">database.ts</div><div class="desc">node:sqlite — dok, chunk, memori, chunks_fts, meta</div></div>
+    <div class="chip"><div class="name">transcript.ts</div><div class="desc">Baca sesi opencode (DB global+local) — sinkron input ke store</div></div>
     <div class="chip"><div class="name">embedder.ts</div><div class="desc">Hash lokal 1024-dim (FNV-1a + n-gram)</div></div>
     <div class="chip"><div class="name">embeddings.ts</div><div class="desc">Lapisan provider: local | transformers (opsional)</div></div>
     <div class="chip"><div class="name">chunker.ts</div><div class="desc">Chunking sadar paragraf/kode + overlap</div></div>
     <div class="chip"><div class="name">vector-search.ts</div><div class="desc">Cache vektor + FTS5 BM25 + gabung RRF</div></div>
     <div class="chip"><div class="name">pipeline.ts</div><div class="desc">Ingest async / dedup / guard / kelola dok</div></div>
     <div class="chip"><div class="name">memory.ts</div><div class="desc">Remember / recall (decay) / consolidate / prune</div></div>
-    <div class="chip"><div class="name">rag-server.ts</div><div class="desc">Server MCP — 18 tools, transport stdio</div></div>
+    <div class="chip"><div class="name">rag-server.ts</div><div class="desc">Server MCP — 19 tools, transport stdio</div></div>
   </div>
   <p style="font-size:.88rem">🍪 Data tersimpan di <code>.rag-data/rag.sqlite</code> (di-gitignore, memori tidak pernah ter-push!)</p>
 

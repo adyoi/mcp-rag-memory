@@ -4,6 +4,7 @@ dist/
 .test-data/
 .test-cli/
 .test-dist/
+.session-logs/
 plugin-log.txt
 *.sqlite
 *.sqlite-wal
