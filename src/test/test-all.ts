@@ -38,10 +38,9 @@ async function main() {
   fs.rmSync(TEST_DB, { recursive: true, force: true });
 
   // Dynamic imports so the modules bind to TEST_DB.
-  const { getDB, packVector, unpackVector, DB_PATH, newId } = await import("../db/database.js");
+  const { getDB, packVector, unpackVector, DB_PATH } = await import("../db/database.js");
   const { embed, cosineSimilarity, dotProduct, EMBED_DIM } = await import("../rag/embedder.js");
   const { chunkText } = await import("../rag/chunker.js");
-  const { searchChunks, vectorSearch } = await import("../rag/vector-search.js");
   const rag = await import("../rag/pipeline.js");
   const mem = await import("../memory/memory.js");
 
@@ -387,6 +386,23 @@ async function main() {
 
   const parsed = sess.readJsonl(logFile);
   check("readJsonl parses valid lines only", parsed.length === 2, `got ${parsed.length}`);
+
+  /* --- key-point condensing --- */
+  const short = "Singkat saja";
+  const shortOut = sess.condenseInput(short);
+  check("short input passes through untouched", shortOut === short, shortOut);
+
+  const longUncondensed =
+    "Hari ini saya memutuskan arsitektur utama untuk layanan autentikasi dengan JWT token, RSA signing, dan expiry. " +
+    "Kami juga memilih Prisma sebagai ORM dengan schema tunggal, dan Chart.js untuk dashboard. " +
+    "Deployment dilakukan ke staging setiap Jumat sore menggunakan GitHub Actions dengan tiga stage lint, test, dan deploy. " +
+    "Semua rahasia disimpan di vault dan tidak boleh masuk repository. " +
+    "Tim kecil ini menyepakati bahwa review kode wajib sebelum merge. " +
+    "Anggaran bulanan infrastruktur dijaga di bawah sepuluh juta rupiah.";
+  const longOut = sess.condenseInput(longUncondensed);
+  check("long input condensed", longOut.length < longUncondensed.length, `${longUncondensed.length} -> ${longOut.length}`);
+  check("condense is deterministic", longOut === sess.condenseInput(longUncondensed));
+  check("condense keeps key facts", longOut.includes("autentikasi") || longOut.includes("Prisma") || longOut.includes("staging"));
 
   const lr1 = await sess.ingestJsonlFile(logFile);
   check("ingest-jsonl creates one doc per message", lr1.newDocs === 2, JSON.stringify(lr1));

@@ -270,7 +270,8 @@
   <h2><span class="emoji-badge">⚡</span>Mulai cepat</h2>
   <div class="bubble" style="width:max-content;max-width:100%">3 perintah mudah, langsung jalan! 🎩</div>
   <pre><code>npm install
-npm test                 # 99 cek: unit + round-trip MCP
+npm test                 # 103 cek: unit + round-trip MCP
+npm run lint             # oxlint
 npm run build            # kompilasi ke dist/
 npm run cli -- stats     # playground CLI
 npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
@@ -326,7 +327,7 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
 npm run sync-latest -- --dir "D:/Project/my-app"   # sesi terbaru di workspace itu
 npm run sync-session -- ses_abc123                  # sesi tertentu
 npm run cli -- sessions                             # daftar sesi terbuka</code></pre>
-  <p style="font-size:.88rem">Data dibaca dari DB opencode sendiri (<code>~/.local/share/opencode/opencode.db</code>), aman karena dedup SHA-256 — jalan berulang-ulang tidak bikin dobel. Tool MCP <code>rag_sync_session</code> nyediain akses yang sama lewat MCP.</p>
+  <p style="font-size:.88rem">Data dibaca dari DB opencode sendiri (<code>~/.local/share/opencode/opencode.db</code>), aman karena dedup SHA-256 — jalan berulang-ulang tidak bikin dobel. Input panjang otomatis dipadatkan ke <strong>point inti</strong> (ekstraktif, tanpa LLM) supaya storage ramping; ketik ulang tetap utuh. Tool MCP <code>rag_sync_session</code> nyediain akses yang sama lewat MCP.</p>
 
   <h2><span class="emoji-badge">🏗️</span>Arsitektur</h2>
   <div class="arch">

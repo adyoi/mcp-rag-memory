@@ -177,21 +177,99 @@ export function readJsonl(file: string): SessionEntry[] {
   return entries;
 }
 
+/* ------------------------------------------------------------------ */
+/* Key-point condensing (extractive, deterministic, zero-LLM)          */
+/* ------------------------------------------------------------------ */
+
+const CONDENSE_DEFAULT_MIN_CHARS = 120;
+const CONDENSE_DEFAULT_RATIO = 0.35;
+
+function condenseEnabled(): boolean {
+  return process.env.RAG_SESSION_CONDENSE !== "0";
+}
+
+function condenseMinChars(): number {
+  const n = Number(process.env.RAG_SESSION_CONDENSE_MIN_CHARS);
+  return Number.isFinite(n) && n >= 50 ? n : CONDENSE_DEFAULT_MIN_CHARS;
+}
+
+function condenseRatio(): number {
+  const r = Number(process.env.RAG_SESSION_CONDENSE_RATIO);
+  return Number.isFinite(r) && r > 0 && r <= 1 ? r : CONDENSE_DEFAULT_RATIO;
+}
+
+const STOPWORDS: ReadonlySet<string> = new Set(
+  (
+    "a an and are as at be but by for from has have he her his i if in is it its " +
+    "not of on or our she so that the their them they this to was we were will with " +
+    "dan atau yang dari ke di dan untuk pada dengan tidak apakah saya kamu kita ini itu yang " +
+    "sudah akan bisa mau apa siapa kapan mana lebih"
+  ).split(/\s+/)
+);
+
+/** Split text into sentences, keeping their original order. */
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?…:])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Score a sentence by how many meaningful tokens it carries (plus position bias). */
+function scoreSentence(s: string): number {
+  const tokens = s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const significant = tokens.filter((t) => t.length >= 4 && !STOPWORDS.has(t) && !/^\d+$/.test(t));
+  return significant.length + Math.min(tokens.length, 8) / 10;
+}
+
+/**
+ * Keep only the key points of a long input. Short inputs pass through untouched;
+ * long ones are reduced to the most information-dense sentences (deterministic,
+ * so re-runs stay idempotent). Pure extractive — no LLM involved.
+ */
+export function condenseInput(text: string): string {
+  const trimmed = text.trim();
+  if (!condenseEnabled() || trimmed.length <= condenseMinChars()) return trimmed;
+
+  const sentences = splitSentences(trimmed);
+  if (sentences.length <= 1) return trimmed;
+
+  const keepTargetChars = Math.max(Math.round(trimmed.length * condenseRatio()), Math.min(condenseMinChars(), trimmed.length));
+  const scored = sentences.map((s, i) => ({ s, i, score: scoreSentence(s) + (i === 0 ? 1 : 0) }));
+  scored.sort((a, b) => b.score - a.score);
+
+  const chosen = new Set<number>();
+  let kept = 0;
+  for (const { i, s } of scored) {
+    if (kept >= keepTargetChars) break;
+    chosen.add(i);
+    kept += s.length;
+  }
+  if (chosen.size === 0) chosen.add(0);
+
+  return Array.from(chosen)
+    .sort((a, b) => a - b)
+    .map((i) => sentences[i])
+    .join(" ")
+    .trim();
+}
+
 /** Ingest entries into the RAG store. Dedup (content-hash) makes this idempotent. */
 export async function ingestEntries(entries: SessionEntry[], source: SessionSource): Promise<SyncResult> {
   let newDocs = 0;
   let deduplicated = 0;
   let skipped = 0;
   for (const e of entries) {
-    const content = e.content.trim();
-    if (!content) {
+    const original = e.content.trim();
+    if (!original) {
       skipped++;
       continue;
     }
+    const content = condenseInput(original);
     const res = await ingestText(content, `${e.sessionId.slice(-12)}-${e.ts}`, {
       source,
       contentType: "text",
-      metadata: { source, session_id: e.sessionId, ts: e.ts },
+      metadata: { source, session_id: e.sessionId, ts: e.ts, condensed: content !== original },
     });
     if (res.deduplicated) deduplicated++;
     else newDocs++;

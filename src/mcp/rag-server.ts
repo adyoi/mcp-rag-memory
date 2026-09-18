@@ -18,7 +18,6 @@ import {
 import {
   ingestSession as syncSession,
   ingestLatest as syncLatest,
-  ingestLogDir as syncLogDir,
 } from "../session/transcript.js";
 import {
   remember,
@@ -35,7 +34,7 @@ import {
 
 const server = new McpServer({
   name: "rag-memory-server",
-  version: "2.1.0",
+  version: "2.2.0",
 });
 
 /* ------------------------------------------------------------------ */

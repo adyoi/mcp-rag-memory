@@ -2,6 +2,15 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [2.2.0] - 2026-09-18
+
+### Added
+- **Key-point condensing** — session inputs are condensed to their essence before ingest: short inputs pass through untouched, long ones are reduced to the most information-dense sentences via deterministic extractive scoring (no LLM, stays idempotent). Toggle with `RAG_SESSION_CONDENSE` (default `1`), thresholds `RAG_SESSION_CONDENSE_MIN_CHARS` (default `120`) and `RAG_SESSION_CONDENSE_RATIO` (default `0.35`). Ingested docs carry `metadata.condensed` when reduced.
+- **Code linting** — `oxlint` dev-dependency + `npm run lint` (errors deny warnings). LSP in opencode picks `oxlint` up automatically once the dependency is present.
+
+### Changed
+- Test suite 99 → 103 assertions (condensing + determinism + key-fact retention).
+
 ## [2.1.0] - 2026-09-17
 
 ### Added

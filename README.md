@@ -242,10 +242,12 @@ new, untouched, friendly to your existing long-term memories. Three layers:
 How it works: sessions are read from opencode's own DB
 (`~/.local/share/opencode/opencode.db` + `opencode-local.db`, override with
 `OPENCODE_DB` / `OPENCODE_DB_LOCAL`), each user message becomes one small
-document (title `<session>-<ts>`, metadata `source: "opencode-db"`). Raw
-transcripts stay in opencode's DB; long-term **memories** are never mixed in.
-Re-runs are idempotent thanks to SHA-256 content-hash dedup, so plugging this
-into any scheduler is safe.
+document (title `<session>-<ts>`, metadata `source: "opencode-db"`). Long
+inputs are **condensed to key points** before storage (extractive, no LLM) so
+the store stays lean; short inputs are saved whole. Raw transcripts stay in
+opencode's DB; long-term **memories** are never mixed in. Re-runs are
+idempotent thanks to SHA-256 content-hash dedup (`metadata.condensed` marks
+reduced docs), so plugging this into any scheduler is safe.
 
 The plugin needs an opencode restart to take effect.
 
@@ -285,11 +287,15 @@ Data lives in `.rag-data/rag.sqlite` (git-ignored).
 | `RAG_PRUNE_AGE_DAYS` | `90` | ...and older than this (never-recalled only) |
 | `RAG_AUTOSYNC` | `1` | Set `0` to disable the session-logger plugin's auto-sync |
 | `OPENCODE_DB` / `OPENCODE_DB_LOCAL` | `~/.local/share/opencode/*.db` | Where session transcripts are read from |
+| `RAG_SESSION_CONDENSE` | `1` | Set `0` to store session inputs verbatim |
+| `RAG_SESSION_CONDENSE_MIN_CHARS` | `120` | Inputs at/below this length are saved whole |
+| `RAG_SESSION_CONDENSE_RATIO` | `0.35` | Fraction of long-input length to keep as key points |
 
 ## Testing
 
 `npm test` spins up the real MCP server over stdio using the SDK client
 and exercises every tool end-to-end against a scratch DB (`.test-data`).
+`npm run lint` checks the codebase with oxlint (run in CI too).
 
 ## GitHub Pages site
 

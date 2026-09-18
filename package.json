@@ -1,6 +1,6 @@
 {
   "name": "mcp-rag-memory",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "RAG + Context Management MCP server: long-term memory, vector storage, knowledge retrieval. Run with npx, zero external APIs.",
   "type": "module",
   "engines": {
@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "lint": "oxlint src --deny-warnings",
     "start": "node dist/mcp/rag-server.js",
     "dev": "tsx src/mcp/rag-server.ts",
     "cli": "tsx src/cli.ts",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.5",
+    "oxlint": "^1.83.0",
     "tsx": "^4.23.0",
     "typescript": "^5.7.0"
   }

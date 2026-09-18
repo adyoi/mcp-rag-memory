@@ -32,7 +32,7 @@ export interface IngestDirectoryOptions {
 }
 
 /** Insert a FTS row, tolerating an unavailable FTS5 backend. */
-function insertFtsRow(docId: string, rowid: number, text: string, chunkIndex: number): void {
+function insertFtsRow(docId: string, rowid: number, text: string): void {
   try {
     getDB().prepare("INSERT INTO chunks_fts(rowid, content) VALUES (?, ?)").run(rowid, text);
   } catch {
@@ -93,7 +93,7 @@ export async function ingestText(
     const vec = await embedText(chunk.text);
     tokens += chunk.tokenCount;
     const res = insertChunk.run(newId(), docId, chunk.index, chunk.text, packVector(vec), chunk.tokenCount, ts);
-    insertFtsRow(docId, Number(res.lastInsertRowid), chunk.text, chunk.index);
+    insertFtsRow(docId, Number(res.lastInsertRowid), chunk.text);
   }
   invalidateVectorCache();
 
