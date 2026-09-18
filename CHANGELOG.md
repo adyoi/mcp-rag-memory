@@ -6,10 +6,14 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ### Added
 - **Key-point condensing** — session inputs are condensed to their essence before ingest: short inputs pass through untouched, long ones are reduced to the most information-dense sentences via deterministic extractive scoring (no LLM, stays idempotent). Toggle with `RAG_SESSION_CONDENSE` (default `1`), thresholds `RAG_SESSION_CONDENSE_MIN_CHARS` (default `120`) and `RAG_SESSION_CONDENSE_RATIO` (default `0.35`). Ingested docs carry `metadata.condensed` when reduced.
-- **Code linting** — `oxlint` dev-dependency + `npm run lint` (errors deny warnings). LSP in opencode picks `oxlint` up automatically once the dependency is present.
+- **Code linting** — `oxlint` dev-dependency + `npm run lint` (covers `src/` and `scripts/`, errors deny warnings). LSP in opencode picks `oxlint` up automatically once the dependency is present.
+- **Safe maintenance script** — `npm run clean-db` with `--force` guardrail to safely reset scratch stores.
 
 ### Changed
 - Test suite 99 → 103 assertions (condensing + determinism + key-fact retention).
+- Documentation updated to reflect 19 tools, 103 checks, session sync commands, and `clean-db`.
+- Cleaned `.gitignore` rules and removed dead `src/index.ts`.
+- `.opencode/instructions.md`: added protocol "Interruption beats the old plan".
 
 ## [2.1.0] - 2026-09-17
 

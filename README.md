@@ -18,13 +18,14 @@ context **across sessions**.
 - **Context Management** — `remember` facts/decisions/preferences, `recall` them later (score-decayed by staleness), rate by importance, consolidate duplicates, filter by type/tag.
 - **Zero external APIs by default** — local hashing-embedder (1024-dim), built-in `node:sqlite`. Works fully offline. Optional `EMBEDDING_PROVIDER=transformers` for a higher-quality ONNX model.
 - **Safe ingestion** — content-hash deduplication, file size guard (`RAG_MAX_FILE_MB`) and an opt-in path allowlist (`RAG_ALLOWED_DIRS`).
-- **MCP server** — runs on stdio, 18 tools.
+- **MCP server** — runs on stdio, 19 tools.
 
 ## Quick start
 
 ```bash
 npm install
-npm test                 # 92 checks: unit + MCP round-trip via SDK client
+npm test                 # 103 checks: unit + MCP round-trip via SDK client
+npm run lint             # oxlint
 npm run build            # compile to dist/
 npm run cli -- stats     # CLI playground
 ```
@@ -219,7 +220,14 @@ npm run cli -- recall "deployment schedule"
 npm run cli -- ingest-dir ./src/rag
 npm run cli -- search "vector similarity"
 npm run cli -- mem-context "database"
+npm run cli -- sessions              # list recent opencode sessions
+npm run cli -- sync-session ses_123  # ingest one session's inputs
+npm run cli -- sync-latest           # ingest the most recent session
+npm run clean-db -- --force          # wipe ALL documents + memories (destructive)
 ```
+
+Semua akses juga tersedia sebagai custom commands (`/remember`, `/recall`,
+`/search`, ...) dan sebagai MCP tools.
 
 ## Auto-save session inputs
 

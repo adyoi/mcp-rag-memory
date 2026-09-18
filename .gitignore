@@ -9,5 +9,3 @@ plugin-log.txt
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-.rag-data-wal
-.rag-data-shm

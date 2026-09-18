@@ -14,13 +14,16 @@
     "README.md"
   ],
   "scripts": {
+    "prebuild": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
-    "lint": "oxlint src --deny-warnings",
+    "lint": "oxlint src scripts --deny-warnings",
+    "clean-db": "tsx scripts/clean-all.ts",
     "start": "node dist/mcp/rag-server.js",
     "dev": "tsx src/mcp/rag-server.ts",
     "cli": "tsx src/cli.ts",
     "sync-logs": "tsx src/cli.ts sync-logs",
     "sync-session": "tsx src/cli.ts sync-session",
+    "sync-latest": "tsx src/cli.ts sync-latest",
     "test": "tsx src/test/test-all.ts",
     "prepublishOnly": "npm run build"
   },
