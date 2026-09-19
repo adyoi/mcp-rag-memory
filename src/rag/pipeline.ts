@@ -4,7 +4,13 @@ import { contentHash, getDB, newId, nowMs, packVector } from "../db/database.js"
 import { chunkText } from "./chunker.js";
 import { embedText } from "./embeddings.js";
 import { searchChunks, vectorSearch, invalidateVectorCache } from "./vector-search.js";
-import type { SearchHit } from "./vector-search.js";
+import type { SearchHit, SearchChunkFilters } from "./vector-search.js";
+
+export interface SearchOptions {
+  topK?: number;
+  minScore?: number;
+  filters?: SearchChunkFilters;
+}
 
 export interface IngestResult {
   docId: string;
@@ -184,13 +190,18 @@ export async function ingestDirectory(
   return { ingested, skipped };
 }
 
-export async function searchDocs(query: string, topK = 10, minScore = 0.08): Promise<SearchHit[]> {
+export async function searchDocs(query: string, topK = 10, minScore = 0.08, filters?: SearchChunkFilters): Promise<SearchHit[]> {
   const q = await embedText(query);
-  return searchChunks(q, { queryText: query, topK, minScore });
+  return searchChunks(q, { queryText: query, topK, minScore, filters });
 }
 
-export async function retrieve(query: string, topK = 6, minScore = 0.08): Promise<RetrievedContext> {
-  const hits = await searchDocs(query, topK, minScore);
+export async function retrieve(
+  query: string,
+  topK = 6,
+  minScore = 0.08,
+  filters?: SearchChunkFilters
+): Promise<RetrievedContext> {
+  const hits = await searchDocs(query, topK, minScore, filters);
   const withTokens = hits.map((h) => ({
     docTitle: h.docTitle,
     chunkIndex: h.chunkIndex,

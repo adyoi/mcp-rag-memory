@@ -136,10 +136,15 @@ server.registerTool(
       query: z.string().min(1),
       top_k: z.number().int().min(1).max(50).optional().default(10),
       min_score: z.number().min(0).max(1).optional().default(0.08),
+      doc_id: z.string().optional().describe("Only search within this document"),
+      source: z.string().optional().describe("Only search documents with this source (e.g. 'opencode-db', 'session-log')"),
     },
   },
-  async (args: { query: string; top_k?: number; min_score?: number }) => {
-    const hits = await searchDocs(args.query, args.top_k ?? 10, args.min_score ?? 0.08);
+  async (args: { query: string; top_k?: number; min_score?: number; doc_id?: string; source?: string }) => {
+    const hits = await searchDocs(args.query, args.top_k ?? 10, args.min_score ?? 0.08, {
+      docId: args.doc_id,
+      source: args.source,
+    });
     return {
       content: [{ type: "text", text: JSON.stringify(hits, null, 2) }],
     };
@@ -155,10 +160,15 @@ server.registerTool(
       query: z.string().min(1),
       top_k: z.number().int().min(1).max(20).optional().default(6),
       min_score: z.number().min(0).max(1).optional().default(0.08),
+      doc_id: z.string().optional().describe("Only retrieve within this document"),
+      source: z.string().optional().describe("Only retrieve documents with this source"),
     },
   },
-  async (args: { query: string; top_k?: number; min_score?: number }) => {
-    const res = await retrieve(args.query, args.top_k ?? 6, args.min_score ?? 0.08);
+  async (args: { query: string; top_k?: number; min_score?: number; doc_id?: string; source?: string }) => {
+    const res = await retrieve(args.query, args.top_k ?? 6, args.min_score ?? 0.08, {
+      docId: args.doc_id,
+      source: args.source,
+    });
     if (res.chunks.length === 0) {
       return { content: [{ type: "text", text: "No relevant context found." }] };
     }

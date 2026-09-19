@@ -3,6 +3,7 @@
  * CLI for the RAG + Context Management engine.
  *
  * Usage:  npm run cli -- <command> [args]
+ *         npx mcp-rag-memory-cli <command> [args]
  *
  * Commands:
  *   ingest-text  <title> <file|->              Ingest text (from file or stdin)
@@ -29,6 +30,7 @@
  *   sync-logs    [dir]                          Ingest .session-logs/*.jsonl to RAG
  *   ingest-jsonl <file>                         Ingest one jsonl log file
  */
+import "./env.js";
 import { ingestText, ingestFile, ingestDirectory, searchDocs, retrieve, listDocuments, deleteDocument, documentStats } from "./rag/pipeline.js";
 import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt, MEMORY_TYPES } from "./memory/memory.js";
 import { ingestSession, ingestJsonlFile, ingestLogDir, ingestLatest, listOpenCodeSessions } from "./session/transcript.js";
@@ -72,12 +74,22 @@ async function run(cmd: string, args: string[]) {
       case "ingest-dir":
         out = await ingestDirectory(args[0], { recursive: true });
         break;
-      case "search":
-        out = await searchDocs(args.join(" "));
+      case "search": {
+        const parsed = parseOpts(args);
+        out = await searchDocs(parsed.positional.join(" "), undefined, undefined, {
+          docId: parsed.opts["doc-id"],
+          source: parsed.opts.source,
+        });
         break;
-      case "retrieve":
-        out = await retrieve(args.join(" "));
+      }
+      case "retrieve": {
+        const parsed = parseOpts(args);
+        out = await retrieve(parsed.positional.join(" "), undefined, undefined, {
+          docId: parsed.opts["doc-id"],
+          source: parsed.opts.source,
+        });
         break;
+      }
       case "docs":
         out = listDocuments();
         break;

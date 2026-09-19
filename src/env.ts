@@ -10,7 +10,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-function loadDotenv(file: string): void {
+export function loadDotenv(file: string): void {
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");

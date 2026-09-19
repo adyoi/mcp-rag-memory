@@ -2,6 +2,20 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [2.4.0] - 2026-09-19
+
+### Added
+- **Cross-workspace auto-save** — the CLI is published as a global bin (`mcp-rag-memory-cli`) and the plugin shells out via `npx -y mcp-rag-memory-cli sync-latest --dir <workspace>`, so auto-save works in any project; the CLI loads `.env`/`RAG_ENV_FILE` like the server.
+- **Search filters** — `rag_search` / `rag_retrieve` / CLI `search`/`retrieve` accept `doc_id` and `source` to narrow ranked results.
+- **GitHub Actions publish workflow** (`.github/workflows/publish.yml`) — push a `v*` tag to publish to npm with provenance (OIDC `id-token: write`); runs build + lint + test first.
+- **`loadDotenv` exported** and covered by tests, plus an end-to-end entry-shim test proving `RAG_ENV_FILE` steers the store dir.
+- **Schema guard for opencode DB sync** — warm, actionable error if the opencode DB layout changes (table/column missing); optional `time_archived` / `parent_id` columns detected dynamically.
+- Test suite 103 → 114 assertions (env loader, entry-shim e2e, search filters).
+
+### Changed
+- **FTS5 tokenizer `unicode61` → `trigram`** (migrated automatically) for CJK and Indonesian-style substring matching. Short terms (≤ 2 chars) skip the keyword leg — the vector leg covers them.
+- README: honest auto-save scope note (plugin ships with this repo; copy it anywhere + `.env` to reuse), new "Performance & limits" section (O(N) bruteforce, ANN = v3 scope), filters and `--source`/`--doc-id` docs.
+
 ## [2.3.0] - 2026-09-19
 
 ### Added

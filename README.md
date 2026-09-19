@@ -24,7 +24,7 @@ context **across sessions**.
 
 ```bash
 npm install
-npm test                 # 103 checks: unit + MCP round-trip via SDK client
+npm test                 # 114 checks: unit + MCP round-trip via SDK client
 npm run lint             # oxlint
 npm run build            # compile to dist/
 npm run cli -- stats     # CLI playground
@@ -278,6 +278,7 @@ npm run cli -- remember "deploys every Friday" --type task --importance 0.7
 npm run cli -- recall "deployment schedule"
 npm run cli -- ingest-dir ./src/rag
 npm run cli -- search "vector similarity"
+npm run cli -- search "auth bug" --source opencode-db   # filter by source or doc-id
 npm run cli -- mem-context "database"
 npm run cli -- sessions              # list recent opencode sessions
 npm run cli -- sync-session ses_123  # ingest one session's inputs
@@ -285,26 +286,40 @@ npm run cli -- sync-latest           # ingest the most recent session
 npm run clean-db -- --force          # wipe ALL documents + memories (destructive)
 ```
 
+`mcp-rag-memory` is also a global CLI. Install once (`npm i -g mcp-rag-memory`)
+and run `mcp-rag-memory-cli search "..."` anywhere; the CLI reads `<cwd>/.env`
+or `RAG_ENV_FILE` to locate its store, so one store per project is enough.
+
 Semua akses juga tersedia sebagai custom commands (`/remember`, `/recall`,
 `/search`, ...) dan sebagai MCP tools.
 
 ## Auto-save session inputs
 
-Every user input you type in opencode becomes searchable in the RAG store —
-new, untouched, friendly to your existing long-term memories. Three layers:
+Every user **message** typed in opencode can be mirrored into the RAG store as
+small searchable documents (metadata `source: "opencode-db"`), kept separate
+from your curated long-term memories. Three layers:
 
-1. **Plugin (real-time, debounced).** `.opencode/plugin/session-logger.ts`
-   watches message events and, at most once a minute, runs
-   `sync-latest` so the session you are typing in lands in the store.
-   Disable with `RAG_AUTOSYNC=0`.
+1. **Plugin (real-time, debounced, cross-workspace).**
+   `.opencode/plugin/session-logger.ts` watches message events and, at most
+   once a minute, runs the portable CLI — `npx -y mcp-rag-memory-cli
+   sync-latest --dir <workspace>` — so the session you are typing in lands in
+   the store. Because it invokes the published bin (not this repo's scripts),
+   it works in **any** project that adds the plugin and a `.env` pointing at
+   its store. Disable with `RAG_AUTOSYNC=0`.
 2. **CLI on demand.**
    ```bash
-   npm run sync-latest -- --dir "D:/Project/my-app"   # latest session in a workspace
-   npm run sync-session -- ses_abc123                  # a specific session
-   npm run sync-logs                                    # .session-logs/*.jsonl (custom logs)
+   npx -y mcp-rag-memory-cli sync-latest --dir "D:/Project/my-app"  # latest session in a workspace
+   npx -y mcp-rag-memory-cli sync-session ses_abc123                # a specific session
+   npx -y mcp-rag-memory-cli sync-logs                              # .session-logs/*.jsonl
    ```
 3. **MCP tool.** `rag_sync_session` exposes the same logic over MCP:
    `{ "session_id": "..." }` or `{ "directory": "..." }` for the latest.
+
+> Honest scope note: the **plugin** only ships with this repo out of the box,
+> but it is a plain node script — copy it into any workspace (and give that
+> project an `.env`) and auto-save just works, since it shells out to the
+> published `mcp-rag-memory-cli` via npx. Without a plugin, auto-save is
+> "manual": run layer 2 or call layer 3 whenever you want a session ingested.
 
 How it works: sessions are read from opencode's own DB
 (`~/.local/share/opencode/opencode.db` + `opencode-local.db`, override with
@@ -314,9 +329,23 @@ inputs are **condensed to key points** before storage (extractive, no LLM) so
 the store stays lean; short inputs are saved whole. Raw transcripts stay in
 opencode's DB; long-term **memories** are never mixed in. Re-runs are
 idempotent thanks to SHA-256 content-hash dedup (`metadata.condensed` marks
-reduced docs), so plugging this into any scheduler is safe.
+reduced docs), so plugging this into any scheduler is safe. A schema guard
+raises a clear error (instead of mysterious SQL failures) if your opencode DB
+layout changes to an unsupported shape.
 
 The plugin needs an opencode restart to take effect.
+
+## Performance & limits
+
+- **Search is brute-force cosine / FTS5 over every chunk**: `O(N)` per query
+  (exact, deterministic — good for a personal store of thousands of chunks).
+  ANN / HNSW indexing is planned scope (v3) for 100k+ chunks.
+- Keyword leg uses the FTS5 **trigram** tokenizer, so CJK text and
+  Indonesian-style substring/inflection matching work without extra config.
+  Consequence: keyword terms of **≤ 2 characters are skipped** (trigram needs
+  3); the vector leg still covers them.
+- Vector embeddings are local hash-based (no external APIs, ~0 cost, offline).
+  They are tuned for short-phrase similarity, not full-document semantics.
 
 ## Architecture
 

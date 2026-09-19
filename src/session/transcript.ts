@@ -59,13 +59,45 @@ interface SessionRow {
   time_updated: number;
 }
 
+/** Column names present on a table (PRAGMA table_info), as a Set. */
+function tableColumns(db: DatabaseSync, table: string): Set<string> {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return new Set(rows.map((r) => r.name));
+  } catch {
+    return new Set();
+  }
+}
+
+function assertOpencodeSchema(db: DatabaseSync, table: string, required: string[]): void {
+  const cols = tableColumns(db, table);
+  if (cols.size === 0) {
+    throw new Error(
+      `opencode DB schema changed: table "${table}" not found. ` +
+        "This version of mcp-rag-memory expects the opencode schema; " +
+        "update the package or pin OPENCODE_DB to a compatible opencode version."
+    );
+  }
+  const missing = required.filter((c) => !cols.has(c));
+  if (missing.length > 0) {
+    throw new Error(
+      `opencode DB schema changed: table "${table}" is missing columns ${missing.join(", ")}. ` +
+        "Update mcp-rag-memory to a version matching your opencode."
+    );
+  }
+}
+
 function querySessions(dbPath: string, limit: number): SessionRow[] {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    assertOpencodeSchema(db, "session", ["id", "directory", "time_updated"]);
+    const cols = tableColumns(db, "session");
+    const archiveClause = cols.has("time_archived") ? "time_archived IS NULL AND" : "";
+    const parentClause = cols.has("parent_id") ? "parent_id IS NULL AND" : "";
     const rows = db
       .prepare(
         `SELECT id, title, directory, time_updated FROM session
-          WHERE time_archived IS NULL AND parent_id IS NULL
+          WHERE ${archiveClause} ${parentClause} title IS NOT NULL
           ORDER BY time_updated DESC LIMIT ?`
       )
       .all(limit) as unknown as SessionRow[];
@@ -123,6 +155,8 @@ export function getSessionTranscript(sessionId: string, limit = 0): SessionEntry
   const db = new DatabaseSync(OPENCODE_DB, { readOnly: true });
   const entries: SessionEntry[] = [];
   try {
+    assertOpencodeSchema(db, "message", ["id", "session_id", "time_created", "data"]);
+    assertOpencodeSchema(db, "part", ["message_id", "data"]);
     const msgs = db
       .prepare(
         `SELECT id, time_created, data FROM message

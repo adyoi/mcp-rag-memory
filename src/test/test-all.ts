@@ -109,6 +109,13 @@ async function main() {
   const s2 = await rag.searchDocs("prisma migration tables", 5);
   check("search finds db doc ", s2.length > 0 && s2[0].docTitle === "DB setup");
 
+  const sFiltered = await rag.searchDocs("jwt authentication RSA", 5, 0.08, { source: "scratch" });
+  check("search filter: source narrows results", sFiltered.length === 0, JSON.stringify(sFiltered));
+
+  const authDocId = (await rag.listDocuments()).find((d) => d.title === "Auth architecture")?.id as string;
+  const sDocFiltered = await rag.searchDocs("jwt authentication RSA", 5, 0.08, { docId: authDocId });
+  check("search filter: doc_id keeps only that document", sDocFiltered.length > 0 && sDocFiltered.every((h) => h.docId === authDocId && h.docTitle === "Auth architecture"), JSON.stringify(sDocFiltered[0] ?? null));
+
   const retrieved = await rag.retrieve("how is jwt signing configured", 3);
   check("retrieve returns context", retrieved.chunks.length > 0);
   check("retrieve reports tokens", retrieved.totalTokens >= retrieved.chunks[0]?.tokenCount);
@@ -420,7 +427,97 @@ async function main() {
   const withMeta = (await rag.listDocuments()).find((d) => (d as { title: string }).title.includes("ses-demo")) as { source?: string; metadata?: unknown };
   check("listDocuments exposes source metadata", withMeta?.source === "session-log" && typeof withMeta?.metadata === "string", JSON.stringify(withMeta));
 
-  /* ================== 8. RESULTS ================== */
+  /* ================== 8. Env loader + entry shim ================== */
+  const { loadDotenv } = await import("../env.js");
+  const envFile = path.join(TEST_DB, "env-fixture");
+  fs.writeFileSync(
+    envFile,
+    [
+      "# comment line",
+      "RAG_ENVTEST_ALPHA=hello",
+      'RAG_ENVTEST_QUOTED="two words"',
+      "export RAG_ENVTEST_EXPORT=ok",
+      "RAG_ENVTEST_INLINE=val # keep the note out",
+      "RAG_ENVTEST_EMPTY=",
+    ].join("\n"),
+    "utf8"
+  );
+  process.env.RAG_ENVTEST_PRESET = "existing";
+  loadDotenv(envFile);
+  check("env: existing var never overridden", process.env.RAG_ENVTEST_PRESET === "existing");
+  check("env: plain KEY=VALUE", process.env.RAG_ENVTEST_ALPHA === "hello", process.env.RAG_ENVTEST_ALPHA);
+  check("env: quoted value stripped", process.env.RAG_ENVTEST_QUOTED === "two words", process.env.RAG_ENVTEST_QUOTED);
+  check("env: export prefix stripped", process.env.RAG_ENVTEST_EXPORT === "ok", process.env.RAG_ENVTEST_EXPORT);
+  check("env: inline comment stripped", process.env.RAG_ENVTEST_INLINE === "val", process.env.RAG_ENVTEST_INLINE);
+  check("env: empty value stored as ''", process.env.RAG_ENVTEST_EMPTY === "", JSON.stringify(process.env.RAG_ENVTEST_EMPTY));
+  for (const k of ["RAG_ENVTEST_ALPHA", "RAG_ENVTEST_QUOTED", "RAG_ENVTEST_EXPORT", "RAG_ENVTEST_INLINE", "RAG_ENVTEST_EMPTY", "RAG_ENVTEST_PRESET"]) delete process.env[k];
+
+  // End-to-end: the published entry shim must load RAG_ENV_FILE before booting the
+  // server, so the store lands where the .env points. Spawned as a real process
+  // (node + tsx loader) to exercise the exact startup path. Keeps stdin open so
+  // the sequential handshake (init → initialized → tools/call) completes.
+  const { spawn } = await import("node:child_process");
+  const envDir = path.join(TEST_DB, "entry-store");
+  fs.rmSync(envDir, { recursive: true, force: true });
+  const entryEnv = path.join(TEST_DB, "entry-env");
+  fs.writeFileSync(entryEnv, `RAG_DB_DIR=${JSON.stringify(envDir)}`, "utf8");
+
+  const runEntry = (lines: string[]) =>
+    new Promise<string>((resolve, reject) => {
+      const childEnv: Record<string, string | undefined> = { ...process.env, RAG_ENV_FILE: entryEnv };
+      delete childEnv.RAG_DB_DIR;
+      const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+        cwd: ROOT,
+        env: childEnv,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      let out = "";
+      let sent = 0;
+      const killer = setTimeout(() => {
+        child.kill();
+        reject(new Error(`entry shim timeout; received: ${out.trim()}`));
+      }, 30_000);
+      child.stdout!.on("data", (chunk) => {
+        out += chunk;
+        // Progress the handshake once the previous response has landed.
+        if (sent === 1 && out.includes('"id":1')) {
+          sent = 2;
+          child.stdin!.write(lines[1] + "\n");
+          child.stdin!.write(lines[2] + "\n");
+        }
+        if (sent === 2 && out.includes('"id":2')) {
+          clearTimeout(killer);
+          child.kill();
+          resolve(out);
+        }
+      });
+      child.stdin!.write(lines[0] + "\n");
+      sent = 1;
+    });
+
+  const entryOut = await runEntry([
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"suite","version":"0"}}}',
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"system_stats","arguments":{}}}',
+  ]).catch((e) => {
+    check("entry: server answered initialize + tools/call", false, String(e));
+    return "";
+  });
+  const outLines = entryOut.split("\n").filter(Boolean);
+  const last = outLines[outLines.length - 1] ?? "";
+  check("entry: server answered initialize + tools/call", outLines.length >= 2 && /"id":2/.test(entryOut), outLines.join(" | "));
+  const parsedStat = (() => {
+    try {
+      const o = JSON.parse(last) as { result?: { content?: Array<{ text?: string }> } };
+      return JSON.parse(o.result?.content?.[0]?.text ?? "{}") as { dbDir?: string };
+    } catch {
+      return {};
+    }
+  })();
+  check("entry: RAG_ENV_FILE honored (dbDir from .env)", parsedStat.dbDir === path.resolve(envDir), String(parsedStat.dbDir));
+  check("entry: exists on disk", fs.existsSync(path.join(ROOT, "src", "index.ts")));
+
+  /* ================== 9. RESULTS ================== */
   console.log("\n=== RESULTS ===");
   console.log(`  Total:  ${passed + failed}`);
   console.log(`  Passed: ${passed}`);

@@ -88,11 +88,22 @@ function migrate(db: DatabaseSync) {
   );
 
   // FTS5 full-text index over chunks for hybrid (BM25 + vector) search.
-  const hasFts = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'")
-    .get() as { name: string } | undefined;
-  if (!hasFts) {
-    db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'unicode61');");
+  // 'trigram' tokenizer: indexes every 3-char window → good CJK recall and
+  // substring matching (helps inflected languages like Indonesian too). Short
+  // terms (<=2 chars) won't match the keyword leg — the vector leg covers them.
+  const ftsRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'")
+    .get() as { sql?: string } | undefined;
+  if (!ftsRow) {
+    db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'trigram');");
+  } else if (!ftsRow.sql!.includes("trigram")) {
+    // Existing store built with 'unicode61' — recreate with trigram and backfill.
+    db.exec("DROP TABLE chunks_fts;");
+    db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'trigram');");
+    db.exec(
+      `INSERT INTO chunks_fts(rowid, content)
+         SELECT rowid, content FROM chunks`
+    );
   }
 }
 

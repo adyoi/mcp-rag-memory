@@ -1,16 +1,18 @@
 {
   "name": "mcp-rag-memory",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "RAG + Context Management MCP server: long-term memory, vector storage, knowledge retrieval. Run with npx, zero external APIs.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
   },
   "bin": {
-    "mcp-rag-memory": "dist/index.js"
+    "mcp-rag-memory": "dist/index.js",
+    "mcp-rag-memory-cli": "dist/cli.js"
   },
   "files": [
     "dist/index.js",
+    "dist/cli.js",
     "dist/env.js",
     "dist/mcp",
     "dist/db",
@@ -42,6 +44,14 @@
     "context-management",
     "node"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adyoi/mcp-rag-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adyoi/mcp-rag-memory/issues"
+  },
+  "homepage": "https://github.com/adyoi/mcp-rag-memory#readme",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

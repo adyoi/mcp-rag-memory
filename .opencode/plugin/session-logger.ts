@@ -2,8 +2,11 @@
  * session-logger — opencode plugin.
  *
  * Debounced auto-sync: whenever the session changes (a new message landed), it
- * triggers `npm run cli -- sync-latest --dir <workspace>` so every user input is
- * ingested from opencode's own DB into the RAG store (mcp-rag-memory).
+ * triggers `npx mcp-rag-memory-cli sync-latest --dir <workspace>` so every user
+ * input is ingested from opencode's own DB into the RAG store (mcp-rag-memory).
+ * Because it runs through npx (not the local repo's package.json scripts), it
+ * works in ANY workspace, not just this one — the portable CLI is published as
+ * the `mcp-rag-memory-cli` bin.
  *
  * The raw transcript stays in opencode's DB as-is; curated long-term memories are
  * not affected. Re-runs are idempotent thanks to content-hash dedup. Never blocks
@@ -23,7 +26,7 @@ export const SessionLoggerPlugin = async ({ directory }: { directory?: string })
     if (now - lastRun < MIN_INTERVAL_MS) return;
     lastRun = now;
     try {
-      spawnCli(["npm", "run", "cli", "--", "sync-latest", "--dir", workspace]);
+      spawnCli(["npx", "--yes", "mcp-rag-memory-cli", "sync-latest", "--dir", workspace]);
     } catch {
       /* never break the chat over logging */
     }

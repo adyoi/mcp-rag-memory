@@ -141,10 +141,16 @@ function rrfMerge(lists: Array<Array<{ key: string }>>): Map<string, number> {
   return scores;
 }
 
+export interface SearchChunkFilters {
+  docId?: string;
+  source?: string;
+}
+
 export interface SearchChunkOptions {
   queryText?: string;
   topK: number;
   minScore: number;
+  filters?: SearchChunkFilters;
 }
 
 /**
@@ -152,7 +158,7 @@ export interface SearchChunkOptions {
  * Controlled by SEARCH_MODE=hybrid|vector|keyword (default hybrid).
  */
 export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): SearchHit[] {
-  const { queryText = "", topK, minScore } = opts;
+  const { queryText = "", topK, minScore, filters } = opts;
   const db = getDB();
   const cap = Math.max(topK * 2, LIST_CAP);
 
@@ -176,6 +182,26 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
       .map(([key, score]) => ({ key, score }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
+  }
+
+  // Narrow ranked results to matching documents (docId and/or source).
+  if (filters && (filters.docId || filters.source)) {
+    const idPlaceholders = finalIds.map(() => "?").join(", ");
+    const clauses: string[] = [`c.id IN (${idPlaceholders})`];
+    const params: Array<string> = finalIds.map((f) => f.key);
+    if (filters.docId) {
+      clauses.push("c.doc_id = ?");
+      params.push(filters.docId);
+    }
+    if (filters.source) {
+      clauses.push("d.source = ?");
+      params.push(filters.source);
+    }
+    const allowed = db
+      .prepare(`SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${clauses.join(" AND ")}`)
+      .all(...params) as Array<{ id: string }>;
+    const allowedSet = new Set(allowed.map((r) => r.id));
+    finalIds = finalIds.filter((f) => allowedSet.has(f.key));
   }
 
   if (finalIds.length === 0) return [];
