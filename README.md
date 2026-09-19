@@ -301,16 +301,16 @@ from your curated long-term memories. Three layers:
 
 1. **Plugin (real-time, debounced, cross-workspace).**
    `.opencode/plugin/session-logger.ts` watches message events and, at most
-   once a minute, runs the portable CLI — `npx -y mcp-rag-memory-cli
-   sync-latest --dir <workspace>` — so the session you are typing in lands in
-   the store. Because it invokes the published bin (not this repo's scripts),
-   it works in **any** project that adds the plugin and a `.env` pointing at
-   its store. Disable with `RAG_AUTOSYNC=0`.
+   once a minute, runs the portable CLI — `npx -y -p mcp-rag-memory
+   mcp-rag-memory-cli sync-latest --dir <workspace>` — so the session you are
+   typing in lands in the store. Because it invokes the published package (not
+   this repo's scripts), it works in **any** project that adds the plugin and a
+   `.env` pointing at its store. Disable with `RAG_AUTOSYNC=0`.
 2. **CLI on demand.**
    ```bash
-   npx -y mcp-rag-memory-cli sync-latest --dir "D:/Project/my-app"  # latest session in a workspace
-   npx -y mcp-rag-memory-cli sync-session ses_abc123                # a specific session
-   npx -y mcp-rag-memory-cli sync-logs                              # .session-logs/*.jsonl
+   npx -y -p mcp-rag-memory mcp-rag-memory-cli sync-latest --dir "D:/Project/my-app"  # latest session in a workspace
+   npx -y -p mcp-rag-memory mcp-rag-memory-cli sync-session ses_abc123                # a specific session
+   npx -y -p mcp-rag-memory mcp-rag-memory-cli sync-logs                              # .session-logs/*.jsonl
    ```
 3. **MCP tool.** `rag_sync_session` exposes the same logic over MCP:
    `{ "session_id": "..." }` or `{ "directory": "..." }` for the latest.
@@ -318,7 +318,8 @@ from your curated long-term memories. Three layers:
 > Honest scope note: the **plugin** only ships with this repo out of the box,
 > but it is a plain node script — copy it into any workspace (and give that
 > project an `.env`) and auto-save just works, since it shells out to the
-> published `mcp-rag-memory-cli` via npx. Without a plugin, auto-save is
+> published CLI bin (`mcp-rag-memory-cli`, inside the `mcp-rag-memory` package)
+> via npx. Without a plugin, auto-save is
 > "manual": run layer 2 or call layer 3 whenever you want a session ingested.
 
 How it works: sessions are read from opencode's own DB

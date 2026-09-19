@@ -2,6 +2,11 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [2.4.1] - 2026-09-19
+
+### Fixed
+- Auto-save invocation: `npx -y mcp-rag-memory-cli` (a package name mistake) renamed to the correct `npx -y -p mcp-rag-memory mcp-rag-memory-cli` form in the plugin and README. The CLI bin ships inside the `mcp-rag-memory` package; `npx` needs `-p` to resolve a bin whose name differs from the package name.
+
 ## [2.4.0] - 2026-09-19
 
 ### Added

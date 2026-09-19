@@ -1,6 +1,6 @@
 {
   "name": "mcp-rag-memory",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "RAG + Context Management MCP server: long-term memory, vector storage, knowledge retrieval. Run with npx, zero external APIs.",
   "type": "module",
   "engines": {
