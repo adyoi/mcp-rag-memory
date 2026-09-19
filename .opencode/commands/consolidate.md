@@ -1,5 +1,5 @@
 ---
-description: Dedupe duplikat & promosi memori panas
+description: <rag> Dedupe duplikat & promosi memori panas
 ---
 Panggil `memory_consolidate`.
 

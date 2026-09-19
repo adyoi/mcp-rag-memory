@@ -1,5 +1,5 @@
 ---
-description: Semantic search dokumen knowledge (RAG)
+description: <rag> Semantic search dokumen knowledge (RAG)
 ---
 Panggil `rag_search` untuk query: $ARGUMENTS (top_k 10).
 

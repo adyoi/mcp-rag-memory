@@ -1,5 +1,5 @@
 ---
-description: Cari memori yang relevan
+description: <rag> Cari memori yang relevan
 ---
 Gunakan tool `memory_recall` untuk mencari memori relevan dengan topik: $ARGUMENTS
 

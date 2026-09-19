@@ -1,4 +1,4 @@
-import { getDB, packVector, unpackVector, getEmbedDim, STORAGE_DIR } from "../db/database.js";
+import { getDB, unpackVector, getEmbedDim } from "../db/database.js";
 import { dotProduct } from "./embedder.js";
 
 export interface ChunkRow {
@@ -213,13 +213,4 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
       },
     ];
   });
-}
-
-export { STORAGE_DIR };
-export function vectorStats(): { dim: number; dbDir: string } {
-  return { dim: 1024, dbDir: STORAGE_DIR };
-}
-
-export function packEmbedding(vec: Float64Array): Uint8Array {
-  return packVector(vec);
 }

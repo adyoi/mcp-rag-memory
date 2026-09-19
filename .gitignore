@@ -6,6 +6,9 @@ dist/
 .test-dist/
 .session-logs/
 plugin-log.txt
+.env
+.env.*
+!.env.example
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

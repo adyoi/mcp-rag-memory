@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as path from "path";
+import { createRequire } from "node:module";
 import { STORAGE_DIR } from "../db/database.js";
 import { embeddingInfo } from "../rag/embeddings.js";
 import {
@@ -32,9 +33,12 @@ import {
   MEMORY_TYPES,
 } from "../memory/memory.js";
 
+const require = createRequire(import.meta.url);
+const serverVersion = require("../../package.json").version as string;
+
 const server = new McpServer({
   name: "rag-memory-server",
-  version: "2.2.0",
+  version: serverVersion,
 });
 
 /* ------------------------------------------------------------------ */

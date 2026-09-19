@@ -1,5 +1,5 @@
 ---
-description: Simpan memori jangka panjang
+description: <rag> Simpan memori jangka panjang
 ---
 Simpan memori ini menggunakan tool `memory_remember` dengan argumen: $ARGUMENTS
 

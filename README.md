@@ -191,9 +191,68 @@ Restart opencode after any config change.
 | | `memory_consolidate` | Dedupe near-identical + promote hot memories |
 | | `memory_stats` | Counts, tokens, avg importance, by type |
 
+## Run in other AI assistants
+
+The server is a standard MCP stdio server — it works with any MCP client
+(Claude Desktop, Cursor, Continue, VS Code, ...), not just opencode.
+
+**Via `npx` (after publishing).**
+
+```bash
+npx mcp-rag-memory
+```
+
+**Claude Desktop** — `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "npx",
+      "args": ["-y", "mcp-rag-memory"],
+      "env": { "RAG_DB_DIR": "C:\\Users\\you\\rag-data" }
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`) — `continue` style JSON, same shape:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "node",
+      "args": ["D:/Project/mcp-server/dist/index.js"],
+      "env": { "RAG_DB_DIR": "D:/Project/mcp-server/.rag-data" }
+    }
+  }
+}
+```
+
+**Continue** — `~/.continue/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["D:/Project/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+**Configuration.** Every `RAG_*` variable can come from three places, with the
+first winning: the MCP client's `env` block → your shell environment → a
+`.env` file in the working directory. Copy [`.env.example`](./.env.example) to
+`.env` and edit, or point at any file via `RAG_ENV_FILE`. The store defaults to
+`.rag-data/` in the working directory.
+
 ## Custom slash commands
 
-The 18 MCP tools are called by the AI automatically — but you can also
+The 19 MCP tools are called by the AI automatically — but you can also
 trigger them directly with custom commands. Sources (same name, project
 wins):
 

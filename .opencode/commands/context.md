@@ -1,5 +1,5 @@
 ---
-description: Bangun blok konteks memori untuk prompt
+description: <rag> Bangun blok konteks memori untuk prompt
 ---
 Panggil `memory_context` untuk topik: $ARGUMENTS
 

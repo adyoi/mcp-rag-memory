@@ -1,5 +1,5 @@
 ---
-description: Statistik lengkap database memory & RAG
+description: <rag> Statistik lengkap database memory & RAG
 ---
 Panggil `system_stats`, `rag_document_stats`, dan `memory_stats`.
 

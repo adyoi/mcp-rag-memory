@@ -2,6 +2,19 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [2.3.0] - 2026-09-19
+
+### Added
+- **Run in any MCP client** — documented `npx`, Claude Desktop, Cursor and Continue configs; server stays a plain stdio MCP server.
+- **`.env` support** — `src/env.ts` zero-dependency loader reads `RAG_ENV_FILE` or `<cwd>/.env` before config imports (host env always wins). New `.env.example`; `.env`/`.env.*` gitignored.
+- New entrypoint `src/index.ts` (loads env → boots server); `bin` and `start`/`dev` scripts point to it.
+
+### Changed
+- `consolidate()` dedup loop O(n³) → O(n²) (lookup maps instead of nested linear scans).
+- Removed dead code: `vectorStats`, `packEmbedding`, `ChunkRow`, `STORAGE_DIR` re-export in `vector-search.ts`.
+- Server version now read from `package.json` (no more duplicated literal).
+- Custom slash commands carry a `<rag>` prefix in their frontmatter description.
+
 ## [2.2.0] - 2026-09-18
 
 ### Added

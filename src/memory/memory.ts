@@ -196,9 +196,11 @@ export async function consolidate(): Promise<ConsolidationReport> {
     .map((r) => ({ id: r.id, rec: getMemory(r.id) }))
     .filter((r) => r.rec !== null && r.rec !== undefined) as Array<{ id: string; rec: MemoryRecord }>;
 
+  const recordsById = new Map(records.map((r) => [r.id, r.rec]));
   const vectors: Array<{ id: string; vec: Float64Array }> = [];
-  for (const r of records) {
-    const vec = unpackVector(rows.find((row) => row.id === r.id)?.embedding ?? null);
+  for (const r of rows) {
+    if (!recordsById.has(r.id)) continue;
+    const vec = unpackVector(r.embedding);
     if (vec) vectors.push({ id: r.id, vec });
   }
 
@@ -210,8 +212,8 @@ export async function consolidate(): Promise<ConsolidationReport> {
       if (toDelete.has(vectors[j].id)) continue;
       const sim = dotProduct(vectors[i].vec, vectors[j].vec);
       if (sim >= 0.92) {
-        const a = records.find((r) => r.id === vectors[i].id)!.rec;
-        const b = records.find((r) => r.id === vectors[j].id)!.rec;
+        const a = recordsById.get(vectors[i].id)!;
+        const b = recordsById.get(vectors[j].id)!;
         if (a.importance >= b.importance) {
           toDelete.add(vectors[j].id);
         } else {

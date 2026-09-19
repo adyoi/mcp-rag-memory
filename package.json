@@ -1,25 +1,32 @@
 {
   "name": "mcp-rag-memory",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "RAG + Context Management MCP server: long-term memory, vector storage, knowledge retrieval. Run with npx, zero external APIs.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
   },
   "bin": {
-    "mcp-rag-memory": "dist/mcp/rag-server.js"
+    "mcp-rag-memory": "dist/index.js"
   },
   "files": [
-    "dist",
-    "README.md"
+    "dist/index.js",
+    "dist/env.js",
+    "dist/mcp",
+    "dist/db",
+    "dist/rag",
+    "dist/memory",
+    "dist/session",
+    "README.md",
+    ".env.example"
   ],
   "scripts": {
     "prebuild": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "lint": "oxlint src scripts --deny-warnings",
     "clean-db": "tsx scripts/clean-all.ts",
-    "start": "node dist/mcp/rag-server.js",
-    "dev": "tsx src/mcp/rag-server.ts",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
     "cli": "tsx src/cli.ts",
     "sync-logs": "tsx src/cli.ts sync-logs",
     "sync-session": "tsx src/cli.ts sync-session",

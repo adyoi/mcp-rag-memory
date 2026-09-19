@@ -1,5 +1,5 @@
 ---
-description: Simpan dokumen knowledge (teks atau file)
+description: <rag> Simpan dokumen knowledge (teks atau file)
 ---
 Simpan sebagai dokumen knowledge: $ARGUMENTS
 
