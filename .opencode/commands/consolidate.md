@@ -1,6 +1,6 @@
 ---
-description: <rag> Dedupe duplikat & promosi memori panas
+description: <rag> Dedupe duplicates & promote hot memories
 ---
-Panggil `memory_consolidate`.
+Call `memory_consolidate`.
 
-Laporkan ringkas: berapa memori yang ter-dedupe/dipromosikan, dan keadaan setelahnya via `memory_stats`.
+Report briefly: how many memories were deduped/promoted, and the resulting state via `memory_stats`.

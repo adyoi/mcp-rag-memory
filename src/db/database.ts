@@ -24,6 +24,9 @@ export function getDB(): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // Wait up to 5s for a concurrent writer (CLI + MCP server + auto-save plugin
+  // all share the same store) instead of failing with SQLITE_BUSY immediately.
+  db.exec("PRAGMA busy_timeout = 5000;");
   _db = db;
   migrate(db);
   return db;

@@ -2,6 +2,18 @@
 
 All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [Unreleased]
+
+### Fixed
+- **Search filters now pre-rank** — `doc_id`/`source` are resolved against the DB before scoring, so a filtered document can never be squeezed out of the top-K by unfiltered chunks. Vector and FTS legs both restrict to the allowed chunk set.
+- **`ingestText` is atomic** — a failed embed/chunk write rolls the whole document back (BEGIN/COMMIT/ROLLBACK) instead of leaving a partial doc.
+- **`ingestText` rejects empty content** with a clear error.
+- **`RAG_MAX_FILE_MB` sanitised** — non-numeric/negative values fall back to 10 MB instead of silently disabling the size guard.
+- **CLI `memory-update` no longer rewrites memory type** to `fact` when `--type` is omitted; non-numeric `--importance`/`--min-importance`/`--limit` fall back to defaults instead of `NaN`.
+- **`getSessionTranscript` searches both opencode DBs** — sessions living in `opencode-local.db` (desktop mode) now sync properly, not just the global DB.
+- **`PRAGMA busy_timeout = 5000`** in the store so concurrent writers (MCP server + CLI auto-save) wait instead of failing immediately with `SQLITE_BUSY`.
+- **`memory_list` clamps `limit` to ≥ 1** so a bad/zero limit never produces a no-op or invalid `LIMIT`.
+
 ## [2.4.1] - 2026-09-19
 
 ### Fixed

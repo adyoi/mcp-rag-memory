@@ -38,7 +38,7 @@ export interface IngestDirectoryOptions {
 }
 
 /** Insert a FTS row, tolerating an unavailable FTS5 backend. */
-function insertFtsRow(docId: string, rowid: number, text: string): void {
+function insertFtsRow(rowid: number, text: string): void {
   try {
     getDB().prepare("INSERT INTO chunks_fts(rowid, content) VALUES (?, ?)").run(rowid, text);
   } catch {
@@ -53,6 +53,9 @@ export async function ingestText(
 ): Promise<IngestResult> {
   const db = getDB();
   const ts = nowMs();
+  if (typeof content !== "string" || content.length === 0) {
+    throw new Error("Ingest content must be a non-empty string");
+  }
 
   // Content-hash dedup: identical documents are never re-embedded.
   const hash = contentHash(content);
@@ -75,31 +78,40 @@ export async function ingestText(
   const docId = newId();
   const chunks = chunkText(content);
 
-  db.prepare(
-    `INSERT INTO documents (id, title, source, content_type, metadata, content_hash, chunk_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    docId,
-    title,
-    opts.source ?? null,
-    opts.contentType ?? "text",
-    JSON.stringify(opts.metadata ?? {}),
-    hash,
-    chunks.length,
-    ts,
-    ts
-  );
-
+  // All writes for one document are atomic: an embed/chunk failure rolls the
+  // whole document back instead of leaving a partial doc in the store.
+  db.exec("BEGIN");
   let tokens = 0;
-  const insertChunk = db.prepare(
-    `INSERT INTO chunks (id, doc_id, idx, content, embedding, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  );
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const vec = await embedText(chunk.text);
-    tokens += chunk.tokenCount;
-    const res = insertChunk.run(newId(), docId, chunk.index, chunk.text, packVector(vec), chunk.tokenCount, ts);
-    insertFtsRow(docId, Number(res.lastInsertRowid), chunk.text);
+  try {
+    db.prepare(
+      `INSERT INTO documents (id, title, source, content_type, metadata, content_hash, chunk_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      docId,
+      title,
+      opts.source ?? null,
+      opts.contentType ?? "text",
+      JSON.stringify(opts.metadata ?? {}),
+      hash,
+      chunks.length,
+      ts,
+      ts
+    );
+
+    const insertChunk = db.prepare(
+      `INSERT INTO chunks (id, doc_id, idx, content, embedding, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const vec = await embedText(chunk.text);
+      tokens += chunk.tokenCount;
+      const res = insertChunk.run(newId(), docId, chunk.index, chunk.text, packVector(vec), chunk.tokenCount, ts);
+      insertFtsRow(Number(res.lastInsertRowid), chunk.text);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
   invalidateVectorCache();
 
@@ -126,7 +138,8 @@ export async function ingestFile(filePath: string, opts: IngestFileOptions = {})
   const st = fs.statSync(abs);
   if (!st.isFile()) throw new Error(`Not a file: ${abs}`);
 
-  const maxMb = Number(process.env.RAG_MAX_FILE_MB ?? 10);
+  const maxMbRaw = Number(process.env.RAG_MAX_FILE_MB ?? 10);
+  const maxMb = Number.isFinite(maxMbRaw) && maxMbRaw > 0 ? maxMbRaw : 10;
   const maxBytes = Math.max(1024, Math.floor(maxMb * 1024 * 1024));
   if (st.size > maxBytes) {
     throw new Error(

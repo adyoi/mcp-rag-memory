@@ -1,6 +1,6 @@
 ---
-description: <rag> Cari memori yang relevan
+description: <rag> Search relevant memories
 ---
-Gunakan tool `memory_recall` untuk mencari memori relevan dengan topik: $ARGUMENTS
+Use the `memory_recall` tool to find memories relevant to: $ARGUMENTS
 
-Tampilkan 3 hasil teratas dengan score-nya, lalu simpulkan 1-2 kalimat yang paling relevan untuk konteks kerja sekarang.
+Show the top 3 results with their scores, then summarize in 1-2 sentences the most relevant points for the current work context.

@@ -24,6 +24,7 @@ export interface SearchOptions {
   topK?: number;
   minScore?: number;
   collection?: "chunks" | "memories";
+  onlyKeys?: Set<string>;
 }
 
 type SearchMode = "hybrid" | "vector" | "keyword";
@@ -92,8 +93,10 @@ export function vectorSearch(
   dimGuard(queryVec);
 
   const rows = loadVectors(table);
+  const only = options.onlyKeys;
   const scored: Array<{ key: string; score: number }> = [];
   for (const r of rows) {
+    if (only && !only.has(r.id)) continue;
     const score = dotProduct(queryVec, r.vec);
     if (score >= minScore) scored.push({ key: r.id, score });
   }
@@ -102,7 +105,7 @@ export function vectorSearch(
 }
 
 /** BM25 keyword hits via FTS5, best-first. Returns empty when the query has no terms. */
-function ftsHits(queryText: string, limit: number): Array<{ key: string }> {
+function ftsHits(queryText: string, limit: number, allowedIds?: Set<string>): Array<{ key: string }> {
   const tokens = queryText
     .toLowerCase()
     .replace(/[^\p{L}\p{N}_-]+/gu, " ")
@@ -111,23 +114,30 @@ function ftsHits(queryText: string, limit: number): Array<{ key: string }> {
     .filter(Boolean)
     .slice(0, 10);
   if (tokens.length === 0) return [];
+  if (allowedIds && allowedIds.size === 0) return [];
   const db = getDB();
   try {
+    const idClause = allowedIds && allowedIds.size > 0 ? "AND c.id IN " + inPlaceholders(allowedIds.size) : "";
     const rows = db
       .prepare(
         `SELECT c.id
            FROM chunks_fts
            JOIN chunks c ON c.rowid = chunks_fts.rowid
-          WHERE chunks_fts MATCH ?
+          WHERE chunks_fts MATCH ? ${idClause}
           ORDER BY bm25(chunks_fts)
           LIMIT ?`
       )
-      .all(tokens.join(" "), limit) as Array<{ id: string }>;
+      .all(tokens.join(" "), ...(allowedIds ? [...allowedIds] : []), limit) as Array<{ id: string }>;
     return rows.map((r) => ({ key: r.id }));
   } catch {
     // FTS5 unavailable or unsupported query syntax — degrade to vector-only.
     return [];
   }
+}
+
+/** "?, ?, ..." placeholder string for n bind params. */
+function inPlaceholders(n: number): string {
+  return `(${Array.from({ length: n }, () => "?").join(", ")})`;
 }
 
 /** Reciprocal-rank fusion over multiple ranked lists of {key}. */
@@ -160,15 +170,38 @@ export interface SearchChunkOptions {
 export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): SearchHit[] {
   const { queryText = "", topK, minScore, filters } = opts;
   const db = getDB();
+
+  // Resolve docId/source filters once, BEFORE ranking, so unfiltered chunks can
+  // never out-rank a filtered one and squeeze it out of the top-K.
+  let allowedIds: Set<string> | undefined;
+  if (filters && (filters.docId || filters.source)) {
+    const clauses: string[] = [];
+    const params: Array<string> = [];
+    if (filters.docId) {
+      clauses.push("c.doc_id = ?");
+      params.push(filters.docId);
+    }
+    if (filters.source) {
+      clauses.push("d.source = ?");
+      params.push(filters.source);
+    }
+    const allowed = db
+      .prepare(
+        `SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${clauses.join(" AND ")}`
+      )
+      .all(...params) as Array<{ id: string }>;
+    allowedIds = new Set(allowed.map((r) => r.id));
+  }
+
   const cap = Math.max(topK * 2, LIST_CAP);
 
   let vectorHits: Array<{ key: string; score: number }> = [];
   if (SEARCH_MODE !== "keyword") {
-    vectorHits = vectorSearch(queryVec, { topK: cap, minScore, collection: "chunks" });
+    vectorHits = vectorSearch(queryVec, { topK: cap, minScore, collection: "chunks", onlyKeys: allowedIds });
   }
   let kwHits: Array<{ key: string }> = [];
   if (SEARCH_MODE !== "vector") {
-    kwHits = ftsHits(queryText, cap);
+    kwHits = ftsHits(queryText, cap, allowedIds);
   }
 
   let finalIds: Array<{ key: string; score: number }>;
@@ -182,26 +215,6 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
       .map(([key, score]) => ({ key, score }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
-  }
-
-  // Narrow ranked results to matching documents (docId and/or source).
-  if (filters && (filters.docId || filters.source)) {
-    const idPlaceholders = finalIds.map(() => "?").join(", ");
-    const clauses: string[] = [`c.id IN (${idPlaceholders})`];
-    const params: Array<string> = finalIds.map((f) => f.key);
-    if (filters.docId) {
-      clauses.push("c.doc_id = ?");
-      params.push(filters.docId);
-    }
-    if (filters.source) {
-      clauses.push("d.source = ?");
-      params.push(filters.source);
-    }
-    const allowed = db
-      .prepare(`SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${clauses.join(" AND ")}`)
-      .all(...params) as Array<{ id: string }>;
-    const allowedSet = new Set(allowed.map((r) => r.id));
-    finalIds = finalIds.filter((f) => allowedSet.has(f.key));
   }
 
   if (finalIds.length === 0) return [];

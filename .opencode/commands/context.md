@@ -1,6 +1,6 @@
 ---
-description: <rag> Bangun blok konteks memori untuk prompt
+description: <rag> Build a memory context block for a prompt
 ---
-Panggil `memory_context` untuk topik: $ARGUMENTS
+Call `memory_context` for topic: $ARGUMENTS
 
-Tampilkan blok konteks yang dihasilkan **apa adanya** agar bisa langsung disisipkan ke prompt, tanpa ditambah/rekayasa.
+Show the generated context block **verbatim** so it can be pasted straight into a prompt, without additions or editing.

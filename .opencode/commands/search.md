@@ -1,6 +1,6 @@
 ---
-description: <rag> Semantic search dokumen knowledge (RAG)
+description: <rag> Semantic search of knowledge documents (RAG)
 ---
-Panggil `rag_search` untuk query: $ARGUMENTS (top_k 10).
+Call `rag_search` for query: $ARGUMENTS (top_k 10).
 
-Tampilkan hasil yang relevan beserta skor dan judul dokumennya secara ringkas.
+Show the relevant results with scores and document titles, concisely.

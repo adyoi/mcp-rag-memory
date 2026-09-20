@@ -1,4 +1,4 @@
 ---
-description: <rag> Daftar semua dokumen knowledge
+description: <rag> List all knowledge documents
 ---
-Panggil `rag_list_documents` dan tampilkan daftar semua dokumen beserta metadata yang tersedia (id dokumen, judul/title, metadata), jumlah total dokumen.
+Call `rag_list_documents` and show all documents with their available metadata (document id, title, metadata), plus the total document count.

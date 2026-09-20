@@ -106,7 +106,7 @@ async function run(cmd: string, args: string[]) {
         out = await remember({
           content: parsed.positional.join(" "),
           type,
-          importance: parsed.opts.importance !== undefined ? Number(parsed.opts.importance) : 0.5,
+          importance: toNum(parsed.opts.importance, 0.5),
           tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
@@ -119,7 +119,7 @@ async function run(cmd: string, args: string[]) {
         out = listMemories({
           type: parsed.opts.type as never,
           tag: parsed.opts.tag as string,
-          minImportance: parsed.opts["min-importance"] !== undefined ? Number(parsed.opts["min-importance"]) : undefined,
+          minImportance: parsed.opts["min-importance"] !== undefined ? toNum(parsed.opts["min-importance"], undefined) : undefined,
         });
         break;
       }
@@ -129,16 +129,16 @@ async function run(cmd: string, args: string[]) {
       case "memory-update": {
         const [id, ...restArgs] = args;
         const parsed = parseOpts(restArgs);
-        const type = parsed.opts.type ?? "fact";
-        assertMemoryType(type);
+        const type = parsed.opts.type;
+        if (type !== undefined) assertMemoryType(type);
         out = await updateMemory(id, {
           content: parsed.opts.content && parsed.opts.content !== "true"
             ? parsed.opts.content
             : parsed.positional.length
               ? parsed.positional.join(" ")
               : undefined,
-          importance: parsed.opts.importance !== undefined ? Number(parsed.opts.importance) : undefined,
-          type,
+          importance: parsed.opts.importance !== undefined ? toNum(parsed.opts.importance, undefined) : undefined,
+          type: type as never,
           tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
@@ -160,19 +160,19 @@ async function run(cmd: string, args: string[]) {
         break;
       case "sessions": {
         const parsed = parseOpts(args);
-        out = listOpenCodeSessions(parsed.opts.limit ? Number(parsed.opts.limit) : 15);
+        out = listOpenCodeSessions(toNum(parsed.opts.limit, 15) ?? 15);
         break;
       }
       case "sync-session": {
         const [id, ...restArgs] = args;
         const parsed = parseOpts(restArgs);
         if (!id) throw new Error("sync-session <sessionId> — run 'cli sessions' to list ids");
-        out = await ingestSession(id, { limit: parsed.opts.limit ? Number(parsed.opts.limit) : 0 });
+        out = await ingestSession(id, { limit: toNum(parsed.opts.limit, 0) ?? 0 });
         break;
       }
       case "sync-latest": {
         const parsed = parseOpts(args);
-        out = await ingestLatest({ limit: parsed.opts.limit ? Number(parsed.opts.limit) : 0, directory: parsed.opts.dir });
+        out = await ingestLatest({ limit: toNum(parsed.opts.limit, 0) ?? 0, directory: parsed.opts.dir });
         break;
       }
       case "sync-logs": {
@@ -214,6 +214,13 @@ function parseOpts(args: string[]): { positional: string[]; opts: Record<string,
     }
   }
   return { positional, opts };
+}
+
+/** Parse a numeric CLI option; falls back to `fallback` for missing/garbage input. */
+function toNum(raw: string | undefined, fallback: number | undefined): number | undefined {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 main().catch((e) => {

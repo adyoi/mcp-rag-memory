@@ -1,6 +1,6 @@
 ---
-description: <rag> Ambil blok konteks RAG untuk di-inject ke prompt
+description: <rag> Get a RAG context block to inject into a prompt
 ---
-Panggil `rag_retrieve` untuk query: $ARGUMENTS
+Call `rag_retrieve` for query: $ARGUMENTS
 
-Tampilkan blok konteks hasil + jumlah token-nya apa adanya.
+Show the resulting context block verbatim plus its token count.

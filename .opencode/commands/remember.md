@@ -1,8 +1,8 @@
 ---
-description: <rag> Simpan memori jangka panjang
+description: <rag> Store a long-term memory
 ---
-Simpan memori ini menggunakan tool `memory_remember` dengan argumen: $ARGUMENTS
+Store this memory using the `memory_remember` tool with arguments: $ARGUMENTS
 
-Format: konten (wajib), `type` opsional (fact/preference/decision/instruction/task/insight/conversation), `importance` 0-1 opsional, `tags` opsional.
+Format: content (required), optional `type` (fact/preference/decision/instruction/task/insight/conversation), optional `importance` 0-1, optional `tags`.
 
-Konfirmasikan singkat ke user: id memory yang dibuat + importance-nya.
+Confirm briefly to the user: the created memory id + its importance.

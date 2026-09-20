@@ -107,7 +107,7 @@ export function listMemories(opts: { type?: MemoryType; tag?: string; minImporta
   }
 
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
-  const limit = Math.min(opts.limit ?? 100, 500);
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 100), 1), 500);
   const rows = db
     .prepare(`SELECT id FROM memories${where} ORDER BY updated_at DESC LIMIT ${limit}`)
     .all(...params) as Array<{ id: string }>;

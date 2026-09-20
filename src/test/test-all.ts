@@ -138,6 +138,14 @@ async function main() {
   const statsAfterDupDelete = await rag.documentStats();
   check("dedup doc deletable", statsAfterDupDelete.documents === stats.documents);
 
+  let emptyGuardHit = false;
+  try {
+    await rag.ingestText("", "empty doc");
+  } catch (e) {
+    emptyGuardHit = (e as Error).message.includes("non-empty");
+  }
+  check("ingestText rejects empty content", emptyGuardHit);
+
   // Hybrid / keyword search modes.
   const kwDoc = await rag.ingestText(
     "The zzzqx hypertesting marker appears exclusively inside this single document body.",
@@ -236,6 +244,8 @@ async function main() {
 
   const mAll = mem.listMemories();
   check("listMemories returns 3", mAll.length === 3);
+  const mClamped = mem.listMemories({ limit: 0 });
+  check("listMemories clamps limit to >= 1", mClamped.length === 1, JSON.stringify(mClamped.length));
   const mByTag = mem.listMemories({ tag: "infra" });
   check("listMemories filters by tag", mByTag.length === 1 && mByTag[0].content.includes("Kubernetes"));
   const mPref = mem.listMemories({ type: "preference" });

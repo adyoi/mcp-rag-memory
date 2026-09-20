@@ -149,10 +149,22 @@ export async function ingestLatest(
   return { found: true, sessionId: hit.id, entries: res.entries, messages: res.messages, newDocs: res.newDocs, deduplicated: res.deduplicated, skipped: res.skipped };
 }
 
-/** Extract user-typed text from one session, oldest first. */
+/** Extract user-typed text from one session, oldest first. Searches the global
+ * and local opencode DBs (a session may live in either, depending on mode). */
 export function getSessionTranscript(sessionId: string, limit = 0): SessionEntry[] {
-  if (!fs.existsSync(OPENCODE_DB)) throw new Error(`opencode DB not found: ${OPENCODE_DB}`);
-  const db = new DatabaseSync(OPENCODE_DB, { readOnly: true });
+  const dbs = opencodeDbs();
+  if (dbs.length === 0) throw new Error(`opencode DB not found: ${OPENCODE_DB}`);
+  let last: SessionEntry[] = [];
+  for (const dbPath of dbs) {
+    const entries = transcriptFromDb(dbPath, sessionId, limit);
+    if (entries.length > 0) return entries;
+    last = entries;
+  }
+  return last;
+}
+
+function transcriptFromDb(dbPath: string, sessionId: string, limit: number): SessionEntry[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   const entries: SessionEntry[] = [];
   try {
     assertOpencodeSchema(db, "message", ["id", "session_id", "time_created", "data"]);

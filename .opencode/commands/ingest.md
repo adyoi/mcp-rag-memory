@@ -1,9 +1,9 @@
 ---
-description: <rag> Simpan dokumen knowledge (teks atau file)
+description: <rag> Store a knowledge document (text or file)
 ---
-Simpan sebagai dokumen knowledge: $ARGUMENTS
+Store as a knowledge document: $ARGUMENTS
 
-- Jika argumen adalah path file → gunakan `rag_ingest_file`.
-- Jika argumen adalah teks → gunakan `rag_ingest_text` (tentukan title + contentType markdown/text sesuai isi, metadata jika ada).
+- If the argument is a file path, use `rag_ingest_file`.
+- If the argument is text, use `rag_ingest_text` (pick title + contentType markdown/text to match the content, metadata if any).
 
-Konfirmasikan id dokumen yang dibuat.
+Confirm the created document id.
