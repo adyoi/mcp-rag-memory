@@ -133,6 +133,21 @@ The MCP server is registered here so it works in **every project**, not just thi
 > from this project's `node_modules` and stores data in the same DB
 > regardless of which project opencode is opened from.
 
+**Re-assert this global config with one command.** opencode updates have
+been observed to reset/wipe the global config (the MCP server, plugin,
+LSP and instructions disappear from new sessions). `scripts/setup-opencode.*`
+rewrite both `opencode.json` and `opencode.jsonc` (PowerShell on Windows,
+portable bash elsewhere; dispatcher `npm run setup-opencode`), **merging**
+with what is already there — user keys are never clobbered, arrays
+(`instructions`, `plugin`) are unioned, broken files are backed up to
+`.bak-<ts>`, and runs are idempotent. Re-run it (and restart opencode)
+after any opencode update:
+
+```bash
+npm run setup-opencode          # merge-in our defaults
+npm run setup-opencode -- --check   # exit 0 = up to date, 1 = changes pending
+```
+
 ### Project config (`opencode.json` in this repo)
 
 Keeps project-specific settings (model, LSP, permissions, instructions) — **no `mcp` block here**:

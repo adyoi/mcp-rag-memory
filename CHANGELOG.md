@@ -4,6 +4,9 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+- **`setup-opencode` config re-assert scripts** — `scripts/setup-opencode.ps1` (Windows PowerShell) and `scripts/setup-opencode.sh` (bash; picks `jq` → `python3` → fallback), dispatched by `scripts/setup-opencode.mjs` via `npm run setup-opencode`. Rewrites the global opencode config (`opencode.json` + `opencode.jsonc`) after an opencode update wipes it: merges with existing files without clobbering user keys, unions `instructions`/`plugin` arrays, backs up broken files to `.bak-<ts>`, stays idempotent, and `--check` reports drift (exit 0 = up to date). Docs in README + AGENTS.md.
+
 ### Fixed
 - **Search filters now pre-rank** — `doc_id`/`source` are resolved against the DB before scoring, so a filtered document can never be squeezed out of the top-K by unfiltered chunks. Vector and FTS legs both restrict to the allowed chunk set.
 - **`ingestText` is atomic** — a failed embed/chunk write rolls the whole document back (BEGIN/COMMIT/ROLLBACK) instead of leaving a partial doc.

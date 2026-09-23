@@ -9,6 +9,7 @@ RAG + Context Management MCP server: long-term memory, vector storage, knowledge
 - `npm test` — full suite (unit + MCP round-trip via SDK client + entry-shim e2e)
 - `npm run cli -- <cmd>` — playground CLI mirroring the MCP tools
 - `npm run clean-db -- --force` — wipe ALL documents + memories (destructive)
+- `npm run setup-opencode` — re-assert the global opencode config (mcp rag-memory, plugin, lsp, instructions); opencode updates have been observed to reset it. After an opencode update (or if the MCP server/plugin goes missing from a session), run this and restart opencode.
 
 Always run `npm run lint` and `npm test` after a change; the suite's final line prints the exact pass/fail total.
 
