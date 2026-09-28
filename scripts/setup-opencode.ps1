@@ -192,6 +192,15 @@ if (Test-Path -LiteralPath $CONFIG_JSONC) {
 $merged = Merge-Config $jsonBase (New-ManagedConfig)
 if ($null -ne $jsoncBase) { $merged = Merge-Config $jsoncBase $merged }
 
+# mcp.rag-memory is a managed key: always force the canonical launcher so a
+# stale/legacy command (e.g. the .ts file used directly as executable, which
+# cannot boot on Windows) gets migrated instead of preserved forever by the
+# never-clobber merge above.
+if (Is-Dict $merged.mcp) {
+  $force = (New-ManagedConfig).mcp['rag-memory']
+  $merged.mcp['rag-memory'] = $force
+}
+
 if ($check) {
   $upToDate = (Test-ConfigEqual (Read-Config $CONFIG_JSON) $merged) -and (Test-ConfigEqual (Read-Config $CONFIG_JSONC) $merged)
   if ($upToDate) {

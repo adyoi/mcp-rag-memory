@@ -51,6 +51,8 @@ let extractorPromise: Promise<any> | null = null;
 
 async function getExtractor(): Promise<any> {
   if (!extractorPromise) {
+    // A failed model load must not be cached for the process lifetime: reset on
+    // rejection so a transient network/first-download error can be retried.
     extractorPromise = (async () => {
       // @ts-expect-error — @huggingface/transformers is an optional dependency
       const mod = await import("@huggingface/transformers");
@@ -60,6 +62,9 @@ async function getExtractor(): Promise<any> {
       }
       return pipeline("feature-extraction", EMBEDDING_MODEL, { quantized: true });
     })();
+    extractorPromise.catch(() => {
+      extractorPromise = null;
+    });
   }
   return extractorPromise;
 }

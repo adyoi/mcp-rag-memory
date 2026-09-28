@@ -100,6 +100,26 @@ merge() {
   fi
 }
 
+force_managed_mcp() {
+  local merged="$1"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$merged" | jq -c --argjson patch "$PATCH" '
+      if (.mcp | type) == "object" then .mcp["rag-memory"] = $patch.mcp["rag-memory"] else . end
+    '
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$merged" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+patch = json.loads(sys.argv[1])
+if isinstance(m.get('mcp'), dict):
+    m['mcp']['rag-memory'] = patch['mcp']['rag-memory']
+print(json.dumps(m, indent=2))
+" "$PATCH"
+  else
+    printf '%s\n' "$PATCH"
+  fi
+}
+
 json_valid() {
   if [ "$1" = "null" ]; then
     return 0
@@ -163,6 +183,11 @@ fi
 # managed defaults. Managed keys never clobber existing values.
 MERGED="$(merge "$JSON_BASE" "$PATCH")"
 MERGED="$(merge "$JSONC_BASE" "$MERGED")"
+
+# mcp.rag-memory is a managed key: always force the canonical launcher so a
+# stale/legacy command (e.g. the .ts file used directly as executable) gets
+# migrated instead of preserved forever by the never-clobber merge above.
+MERGED="$(force_managed_mcp "$MERGED")"
 
 if [ "${1:-}" = "--check" ]; then
   if config_equal "$CONFIG_JSON" "$MERGED" && config_equal "$CONFIG_JSONC" "$MERGED"; then

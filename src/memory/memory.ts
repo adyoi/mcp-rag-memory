@@ -16,8 +16,15 @@ export const MEMORY_TYPES = [
 
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
-/** Half-life in days for the recall decay curve. */
-const DECAY_HALF_LIFE_DAYS = Number(process.env.RAG_MEMORY_HALF_LIFE_DAYS ?? 14);
+/** Half-life in days for the recall decay curve (invalid values fall back to 14). */
+const DECAY_HALF_LIFE_DAYS = numEnv("RAG_MEMORY_HALF_LIFE_DAYS", 14, (n) => n > 0);
+
+function numEnv(name: string, fallback: number, valid: (n: number) => boolean): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && valid(n) ? n : fallback;
+}
 
 export interface MemoryInput {
   content: string;
@@ -59,33 +66,81 @@ export async function remember(input: MemoryInput): Promise<MemoryRecord> {
   ).run(id, type, input.content, importance, packVector(vec), tags, ts, ts);
   invalidateVectorCache();
 
-  return getMemory(id)!;
+  const rec = getMemory(id);
+  if (!rec) throw new Error("Memory insert failed: row disappeared immediately after write");
+  return rec;
+}
+
+interface MemoryRow {
+  id: string;
+  type: string;
+  content: string;
+  importance: number;
+  tags: string;
+  recall_count: number;
+  last_recalled: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** One query for the whole page — getMemory() per row used to be an N+1. */
+function toRecords(rows: MemoryRow[]): MemoryRecord[] {
+  return rows.map((row) => ({
+    id: row.id,
+    type: row.type as MemoryType,
+    content: row.content,
+    importance: typeof row.importance === "number" && Number.isFinite(row.importance) ? row.importance : 0.5,
+    tags: parseTags(row.tags),
+    recallCount: row.recall_count,
+    lastRecalled: row.last_recalled,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+const MEMORY_COLUMNS =
+  "id, type, content, importance, tags, recall_count, last_recalled, created_at, updated_at";
+
+/** Never let a malformed row break every read path. */
+function parseTags(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((t) => String(t)) : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function recall(query: string, topK = 8, minScore = 0.1): Promise<MemoryRecallHit[]> {
   const db = getDB();
   const q = await embedText(query);
   const hits = vectorSearch(q, { topK: topK * 2, minScore, collection: "memories" });
+  if (hits.length === 0) return [];
 
   const ts = nowMs();
-  const bump = db.prepare("UPDATE memories SET recall_count = recall_count + 1, last_recalled = ? WHERE id = ?");
-  const results: MemoryRecallHit[] = [];
+  const rows = db
+    .prepare(
+      `SELECT ${MEMORY_COLUMNS} FROM memories WHERE id IN (${hits.map(() => "?").join(", ")})`
+    )
+    .all(...hits.map((h) => h.key)) as unknown as MemoryRow[];
+  const byId = new Map(toRecords(rows).map((r) => [r.id, r]));
+
+  const scored: MemoryRecallHit[] = [];
   for (const h of hits) {
-    const rec = getMemory(h.key);
+    const rec = byId.get(h.key);
     if (!rec) continue;
-    bump.run(ts, rec.id);
     const ageMs = ts - (rec.lastRecalled ?? rec.createdAt);
     const decay = Math.pow(0.5, ageMs / (DECAY_HALF_LIFE_DAYS * 86_400_000));
-    results.push({
-      ...rec,
-      recallCount: rec.recallCount + 1,
-      lastRecalled: ts,
-      score: h.score * decay,
-      decay,
-    });
+    scored.push({ ...rec, score: h.score * decay, decay });
   }
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, topK);
+  scored.sort((a, b) => b.score - a.score);
+  const results = scored.slice(0, topK);
+
+  // Bump only what is actually returned: a memory nobody saw is not "recalled",
+  // and phantom bumps used to feed decay and the promotion threshold.
+  const bump = db.prepare("UPDATE memories SET recall_count = recall_count + 1, last_recalled = ? WHERE id = ?");
+  for (const r of results) bump.run(ts, r.id);
+  return results.map((r) => ({ ...r, recallCount: r.recallCount + 1, lastRecalled: ts }));
 }
 
 export function listMemories(opts: { type?: MemoryType; tag?: string; minImportance?: number; limit?: number } = {}): MemoryRecord[] {
@@ -98,7 +153,11 @@ export function listMemories(opts: { type?: MemoryType; tag?: string; minImporta
     params.push(opts.type);
   }
   if (opts.tag) {
-    clauses.push("EXISTS (SELECT 1 FROM json_each(memories.tags) AS _tg WHERE _tg.value = ?)");
+    // json_each() raises "malformed JSON" on a corrupted column, which would
+    // break the whole listing. Feed it a guaranteed-valid array instead.
+    clauses.push(
+      "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(memories.tags) THEN memories.tags ELSE '[]' END) AS _tg WHERE _tg.value = ?)"
+    );
     params.push(opts.tag);
   }
   if (opts.minImportance !== undefined) {
@@ -109,41 +168,18 @@ export function listMemories(opts: { type?: MemoryType; tag?: string; minImporta
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 100), 1), 500);
   const rows = db
-    .prepare(`SELECT id FROM memories${where} ORDER BY updated_at DESC LIMIT ${limit}`)
-    .all(...params) as Array<{ id: string }>;
-
-  return rows.map((r) => getMemory(r.id)).filter(Boolean) as MemoryRecord[];
+    .prepare(`SELECT ${MEMORY_COLUMNS} FROM memories${where} ORDER BY updated_at DESC LIMIT ${limit}`)
+    .all(...params) as unknown as MemoryRow[];
+  return toRecords(rows);
 }
 
 export function getMemory(id: string): MemoryRecord | null {
   const db = getDB();
   const row = db
-    .prepare("SELECT * FROM memories WHERE id = ?")
-    .get(id) as unknown as
-    | {
-        id: string;
-        type: string;
-        content: string;
-        importance: number;
-        tags: string;
-        recall_count: number;
-        last_recalled: number | null;
-        created_at: number;
-        updated_at: number;
-      }
-    | undefined;
+    .prepare(`SELECT ${MEMORY_COLUMNS} FROM memories WHERE id = ?`)
+    .get(id) as unknown as MemoryRow | undefined;
   if (!row) return null;
-  return {
-    id: row.id,
-    type: row.type as MemoryType,
-    content: row.content,
-    importance: row.importance,
-    tags: JSON.parse(row.tags) as string[],
-    recallCount: row.recall_count,
-    lastRecalled: row.last_recalled,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  return toRecords([row])[0];
 }
 
 export async function updateMemory(
@@ -158,13 +194,21 @@ export async function updateMemory(
   const type = patch.type ?? existing.type;
   const importance = patch.importance !== undefined ? clampImportance(patch.importance) : existing.importance;
   const tags = patch.tags ?? existing.tags;
-  const vec = await embedText(content);
   const ts = nowMs();
 
-  db.prepare(
-    "UPDATE memories SET content = ?, type = ?, importance = ?, tags = ?, embedding = ?, updated_at = ? WHERE id = ?"
-  ).run(content, type, importance, JSON.stringify(tags), packVector(vec), ts, id);
-  invalidateVectorCache();
+  // Only re-embed when the text actually changed: the vector is the only column
+  // that needs the model, and an importance-only patch must stay cheap.
+  if (content !== existing.content) {
+    const vec = await embedText(content);
+    db.prepare(
+      "UPDATE memories SET content = ?, type = ?, importance = ?, tags = ?, embedding = ?, updated_at = ? WHERE id = ?"
+    ).run(content, type, importance, JSON.stringify(tags), packVector(vec), ts, id);
+    invalidateVectorCache();
+  } else {
+    db.prepare(
+      "UPDATE memories SET content = ?, type = ?, importance = ?, tags = ?, updated_at = ? WHERE id = ?"
+    ).run(content, type, importance, JSON.stringify(tags), ts, id);
+  }
 
   return getMemory(id);
 }
@@ -180,44 +224,69 @@ export interface ConsolidationReport {
   removedDuplicates: number;
   promoted: number;
   pruned: number;
+  skippedDedup: boolean;
   totals: { memories: number; tokens: number };
 }
 
+/** Above this many vectors the O(n^2) dedup pass is skipped (event-loop budget). */
+const DEDUP_MAX_VECTORS = 2000;
+const DEDUP_SIMILARITY = 0.92;
+const DEDUP_TOKEN_OVERLAP = 0.8;
+
+function tokenSet(text: string): Set<string> {
+  return new Set(
+    (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((t) => t.length > 1)
+  );
+}
+
+/** Jaccard overlap of word sets — the second gate before anything is deleted. */
+function tokenOverlap(a: string, b: string): number {
+  const ta = tokenSet(a);
+  const tb = tokenSet(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  return shared / (ta.size + tb.size - shared);
+}
+
 /**
- * - Removes near-duplicate memories (dot product > 0.92) keeping the highest-importance one.
+ * - Removes near-duplicate memories (cosine >= 0.92 AND >= 80% word overlap)
+ *   keeping the highest-importance one. The text gate matters: templated agent
+ *   memories ("The user's X is Y") sit at ~0.95 cosine while being distinct, and
+ *   deleting those is unrecoverable.
  * - Promotes importance of frequently-needed memories (recall_count >= 5) by +0.1.
  * - Optionally prunes stale, low-importance, never-recalled memories (RAG_PRUNE=1,
  *   RAG_PRUNE_IMPORTANCE=0.2, RAG_PRUNE_AGE_DAYS=90). Off by default — deletes are irreversible.
  */
 export async function consolidate(): Promise<ConsolidationReport> {
   const db = getDB();
-  const rows = db.prepare("SELECT id, embedding FROM memories").all() as Array<{ id: string; embedding: Uint8Array | null }>;
-  const records = rows
-    .map((r) => ({ id: r.id, rec: getMemory(r.id) }))
-    .filter((r) => r.rec !== null && r.rec !== undefined) as Array<{ id: string; rec: MemoryRecord }>;
+  const rows = db
+    .prepare(`SELECT ${MEMORY_COLUMNS}, embedding FROM memories`)
+    .all() as unknown as Array<MemoryRow & { embedding: Uint8Array | null }>;
 
-  const recordsById = new Map(records.map((r) => [r.id, r.rec]));
   const vectors: Array<{ id: string; vec: Float64Array }> = [];
   for (const r of rows) {
-    if (!recordsById.has(r.id)) continue;
     const vec = unpackVector(r.embedding);
     if (vec) vectors.push({ id: r.id, vec });
   }
 
+  const records = new Map(toRecords(rows).map((r) => [r.id, r]));
   let removedDuplicates = 0;
+  const skippedDedup = vectors.length > DEDUP_MAX_VECTORS;
   const toDelete = new Set<string>();
-  for (let i = 0; i < vectors.length; i++) {
-    if (toDelete.has(vectors[i].id)) continue;
-    for (let j = i + 1; j < vectors.length; j++) {
-      if (toDelete.has(vectors[j].id)) continue;
-      const sim = dotProduct(vectors[i].vec, vectors[j].vec);
-      if (sim >= 0.92) {
-        const a = recordsById.get(vectors[i].id)!;
-        const b = recordsById.get(vectors[j].id)!;
+  if (!skippedDedup) {
+    for (let i = 0; i < vectors.length; i++) {
+      if (toDelete.has(vectors[i].id)) continue;
+      for (let j = i + 1; j < vectors.length; j++) {
+        if (toDelete.has(vectors[j].id)) continue;
+        if (dotProduct(vectors[i].vec, vectors[j].vec) < DEDUP_SIMILARITY) continue;
+        const a = records.get(vectors[i].id);
+        const b = records.get(vectors[j].id);
+        if (!a || !b || tokenOverlap(a.content, b.content) < DEDUP_TOKEN_OVERLAP) continue;
         if (a.importance >= b.importance) {
-          toDelete.add(vectors[j].id);
+          toDelete.add(b.id);
         } else {
-          toDelete.add(vectors[i].id);
+          toDelete.add(a.id);
           const tmpId = vectors[i].id;
           vectors[i].id = vectors[j].id;
           vectors[j].id = tmpId;
@@ -230,21 +299,21 @@ export async function consolidate(): Promise<ConsolidationReport> {
   const delStmt = db.prepare("DELETE FROM memories WHERE id = ?");
   for (const id of toDelete) delStmt.run(id);
 
-  let promoted = 0;
-  const bumpPromotion = async () => {
-    for (const rec of listMemories()) {
-      if (rec.recallCount >= 5 && rec.importance < 1) {
-        await updateMemory(rec.id, { importance: Math.min(1, rec.importance + 0.1) });
-        promoted++;
-      }
-    }
-  };
+  // One UPDATE for the whole store: the old per-row updateMemory() re-embedded
+  // every candidate (a full model inference each) and only saw the newest 100.
+  const promoted = Number(
+    db
+      .prepare(
+        "UPDATE memories SET importance = min(1, importance + 0.1) WHERE recall_count >= 5 AND importance < 1"
+      )
+      .run().changes
+  );
 
   let pruned = 0;
   const pruneEnabled = process.env.RAG_PRUNE === "1" || process.env.RAG_PRUNE === "true";
   if (pruneEnabled) {
-    const minImp = Number(process.env.RAG_PRUNE_IMPORTANCE ?? 0.2);
-    const maxAgeDays = Number(process.env.RAG_PRUNE_AGE_DAYS ?? 90);
+    const minImp = numEnv("RAG_PRUNE_IMPORTANCE", 0.2, (n) => n >= 0 && n <= 1);
+    const maxAgeDays = numEnv("RAG_PRUNE_AGE_DAYS", 90, (n) => n >= 0);
     const cutoff = nowMs() - maxAgeDays * 86_400_000;
     const stale = db
       .prepare("SELECT id FROM memories WHERE importance < ? AND recall_count = 0 AND created_at < ?")
@@ -255,7 +324,6 @@ export async function consolidate(): Promise<ConsolidationReport> {
     }
   }
 
-  await bumpPromotion();
   invalidateVectorCache();
 
   const stats = memoryStats();
@@ -263,6 +331,7 @@ export async function consolidate(): Promise<ConsolidationReport> {
     removedDuplicates,
     promoted,
     pruned,
+    skippedDedup,
     totals: { memories: stats.memories, tokens: stats.tokens },
   };
 }
@@ -275,9 +344,11 @@ export function memoryStats(): { memories: number; tokens: number; avgImportance
   const byType: Record<string, number> = {};
   for (const r of byTypeRows) byType[r.type] = r.c;
 
+  // LENGTH() in SQL: loading every content blob just to count tokens was a full
+  // table pull on each system_stats / memory_stats call.
   let totalTokens = 0;
-  for (const r of db.prepare("SELECT content FROM memories").all() as Array<{ content: string }>) {
-    totalTokens += estimateTokens(r.content);
+  for (const r of db.prepare("SELECT LENGTH(content) AS n FROM memories").all() as Array<{ n: number | null }>) {
+    totalTokens += estimateTokens("x".repeat(Math.max(0, r.n ?? 0)));
   }
 
   return { memories: count.c, tokens: totalTokens, avgImportance: avg.a, byType };
@@ -291,5 +362,6 @@ export async function contextPrompt(query: string, topK = 6): Promise<{ context:
 }
 
 function clampImportance(v: number): number {
+  if (!Number.isFinite(v)) return 0.5;
   return Math.min(1, Math.max(0, v));
 }

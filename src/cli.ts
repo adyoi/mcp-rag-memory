@@ -58,25 +58,32 @@ function assertMemoryType(type: string): asserts type is (typeof MEMORY_TYPES)[n
   }
 }
 
+function requireArg(value: string | undefined, usage: string): string {
+  if (!value || value.startsWith("--")) throw new Error(`Missing argument — usage: ${usage}`);
+  return value;
+}
+
 async function run(cmd: string, args: string[]) {
   let out: unknown;
   try {
     switch (cmd) {
       case "ingest-text": {
-        const [title, fileOrDash] = args;
+        const parsed = parseOpts(args);
+        const [title, fileOrDash] = parsed.positional;
+        if (!title || !fileOrDash) throw new Error("Missing argument — usage: ingest-text <title> <file|->");
         const content = fileOrDash === "-" ? fs.readFileSync(0, "utf-8") : fs.readFileSync(fileOrDash, "utf-8");
-        out = await ingestText(content, title ?? fileOrDash ?? "untitled");
+        out = await ingestText(content, title);
         break;
       }
       case "ingest-file":
-        out = await ingestFile(args[0]);
+        out = await ingestFile(requireArg(args[0], "ingest-file <path>"));
         break;
       case "ingest-dir":
-        out = await ingestDirectory(args[0], { recursive: true });
+        out = await ingestDirectory(requireArg(args[0], "ingest-dir <dir>"), { recursive: true });
         break;
       case "search": {
         const parsed = parseOpts(args);
-        out = await searchDocs(parsed.positional.join(" "), undefined, undefined, {
+        out = await searchDocs(queryArg(parsed.positional), toNum(parsed.opts["top-k"], 10), toNum(parsed.opts["min-score"], 0.08), {
           docId: parsed.opts["doc-id"],
           source: parsed.opts.source,
         });
@@ -84,67 +91,80 @@ async function run(cmd: string, args: string[]) {
       }
       case "retrieve": {
         const parsed = parseOpts(args);
-        out = await retrieve(parsed.positional.join(" "), undefined, undefined, {
+        out = await retrieve(queryArg(parsed.positional), toNum(parsed.opts["top-k"], 6), toNum(parsed.opts["min-score"], 0.08), {
           docId: parsed.opts["doc-id"],
           source: parsed.opts.source,
         });
         break;
       }
-      case "docs":
-        out = listDocuments();
+      case "docs": {
+        const parsed = parseOpts(args);
+        out = listDocuments({ limit: toNum(parsed.opts.limit, undefined), offset: toNum(parsed.opts.offset, undefined) });
         break;
+      }
       case "doc-stats":
         out = documentStats();
         break;
       case "rm-doc":
-        out = deleteDocument(args[0]);
+        out = deleteDocument(requireArg(args[0], "rm-doc <doc_id>"));
         break;
       case "remember": {
         const parsed = parseOpts(args);
+        const content = parsed.positional.join(" ");
+        if (!content) throw new Error("Missing argument — usage: remember <content> [--type fact] [--importance 0.5] [--tag x]");
         const type = parsed.opts.type ?? "fact";
         assertMemoryType(type);
         out = await remember({
-          content: parsed.positional.join(" "),
+          content,
           type,
           importance: toNum(parsed.opts.importance, 0.5),
           tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
       }
-      case "recall":
-        out = await recall(args.join(" "));
+      case "recall": {
+        const parsed = parseOpts(args);
+        out = await recall(queryArg(parsed.positional), toNum(parsed.opts["top-k"], 8), toNum(parsed.opts["min-score"], 0.1));
         break;
+      }
       case "memory-list": {
         const parsed = parseOpts(args);
+        const type = parsed.opts.type;
+        if (type !== undefined) assertMemoryType(type);
         out = listMemories({
-          type: parsed.opts.type as never,
-          tag: parsed.opts.tag as string,
-          minImportance: parsed.opts["min-importance"] !== undefined ? toNum(parsed.opts["min-importance"], undefined) : undefined,
+          type,
+          tag: parsed.opts.tag,
+          minImportance: toNum(parsed.opts["min-importance"], undefined),
+          limit: toNum(parsed.opts.limit, undefined),
         });
         break;
       }
       case "memory-get":
-        out = getMemory(args[0]);
+        out = getMemory(requireArg(args[0], "memory-get <id>"));
         break;
       case "memory-update": {
         const [id, ...restArgs] = args;
         const parsed = parseOpts(restArgs);
+        if (!id) throw new Error("Missing argument — usage: memory-update <id> [--content ...] [--importance 0.8] [--type fact] [--tag x]");
         const type = parsed.opts.type;
         if (type !== undefined) assertMemoryType(type);
+        // --content=... (or --content <text>) sets the body; leftover positional
+        // words are the body too. The old `!== "true"` check silently discarded
+        // any content that was literally the word "true".
+        const content = parsed.opts.content ?? (parsed.positional.length ? parsed.positional.join(" ") : undefined);
+        if (content === undefined && type === undefined && parsed.opts.importance === undefined && parsed.opts.tag === undefined) {
+          throw new Error("Nothing to update — pass --content, --type, --importance and/or --tag");
+        }
         out = await updateMemory(id, {
-          content: parsed.opts.content && parsed.opts.content !== "true"
-            ? parsed.opts.content
-            : parsed.positional.length
-              ? parsed.positional.join(" ")
-              : undefined,
-          importance: parsed.opts.importance !== undefined ? toNum(parsed.opts.importance, undefined) : undefined,
-          type: type as never,
+          content,
+          importance: toNum(parsed.opts.importance, undefined),
+          type,
           tags: parsed.opts.tag ? [parsed.opts.tag] : undefined,
         });
         break;
       }
       case "forget":
-        out = forget(args[0]);
+        out = forget(requireArg(args[0], "forget <id>"));
         break;
       case "consolidate":
         out = await consolidate();
@@ -152,15 +172,17 @@ async function run(cmd: string, args: string[]) {
       case "memory-stats":
         out = memoryStats();
         break;
-      case "mem-context":
-        out = await contextPrompt(args.join(" "));
+      case "mem-context": {
+        const parsed = parseOpts(args);
+        out = await contextPrompt(queryArg(parsed.positional), toNum(parsed.opts["top-k"], 6));
         break;
+      }
       case "stats":
         out = { documents: documentStats(), memories: memoryStats(), dbDir: STORAGE_DIR };
         break;
       case "sessions": {
         const parsed = parseOpts(args);
-        out = listOpenCodeSessions(toNum(parsed.opts.limit, 15) ?? 15);
+        out = listOpenCodeSessions(toNum(parsed.opts.limit, 15) ?? 15, { directory: parsed.opts.dir });
         break;
       }
       case "sync-session": {
@@ -172,7 +194,10 @@ async function run(cmd: string, args: string[]) {
       }
       case "sync-latest": {
         const parsed = parseOpts(args);
-        out = await ingestLatest({ limit: toNum(parsed.opts.limit, 0) ?? 0, directory: parsed.opts.dir });
+        out = await ingestLatest({
+          limit: toNum(parsed.opts.limit, 0) ?? 0,
+          directory: parsed.opts.dir ?? parsed.positional[0],
+        });
         break;
       }
       case "sync-logs": {
@@ -181,7 +206,7 @@ async function run(cmd: string, args: string[]) {
         break;
       }
       case "ingest-jsonl":
-        out = await ingestJsonlFile(args[0]);
+        out = await ingestJsonlFile(requireArg(args[0], "ingest-jsonl <file>"));
         break;
       default:
         console.error(`Unknown command: ${cmd}`);
@@ -190,9 +215,17 @@ async function run(cmd: string, args: string[]) {
     }
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
+    closeDB();
     process.exit(1);
   }
   console.log(JSON.stringify(out, null, 2));
+}
+
+/** Query text from positional words — empty input is an error, not a silent []. */
+function queryArg(positional: string[]): string {
+  const q = positional.join(" ").trim();
+  if (!q) throw new Error("Missing query — usage: <command> <query>");
+  return q;
 }
 
 function parseOpts(args: string[]): { positional: string[]; opts: Record<string, string> } {
@@ -201,12 +234,20 @@ function parseOpts(args: string[]): { positional: string[]; opts: Record<string,
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      if (eq > 0) {
+        // --key=value: the value may legitimately start with "--".
+        opts[a.slice(2, eq)] = a.slice(eq + 1);
+        continue;
+      }
       const key = a.slice(2);
       const next = args[i + 1];
-      if (next && !next.startsWith("--")) {
+      if (next !== undefined && !next.startsWith("--")) {
         opts[key] = next;
         i++;
       } else {
+        // Boolean flag. Previously the literal "true" was stored as the value,
+        // which then leaked into --content and --dir.
         opts[key] = "true";
       }
     } else {

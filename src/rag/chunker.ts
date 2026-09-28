@@ -30,7 +30,9 @@ function splitIntoParagraphs(text: string): string[] {
   let inCode = false;
 
   for (const line of text.split(/\r?\n/)) {
-    const codeBoundary = /^\s*(```|~~~|---)/.test(line.trim());
+    // Only real fences toggle code mode — `---` is a thematic break / front
+    // matter delimiter, and one stray `---` used to swallow the whole document.
+    const codeBoundary = /^\s*(```|~~~)/.test(line.trim());
     if (codeBoundary) inCode = !inCode;
 
     if (inCode || isCodeLine(line)) {
@@ -53,9 +55,53 @@ function splitIntoParagraphs(text: string): string[] {
   return blocks.filter((b) => b.trim().length > 0);
 }
 
+/**
+ * Sentence split that keeps decimals and version numbers intact
+ * ("pip 24.0.1" stays one sentence) and keeps fenced code blocks whole,
+ * because newlines are never treated as terminators.
+ */
 function splitIntoSentences(block: string): string[] {
-  const sentences = block.match(/[^.!?。！？\n]+[.!?。！？]?/g) ?? [];
-  return sentences.map((s) => s.trim()).filter((s) => s.length > 0);
+  const out: string[] = [];
+  const TERMINATORS = ".!?。！？";
+  let start = 0;
+  for (let i = 0; i < block.length; i++) {
+    const ch = block[i];
+    if (!TERMINATORS.includes(ch)) continue;
+    // A period between two digits is a decimal point, not a sentence end.
+    if (ch === "." && /\d/.test(block[i - 1] ?? "") && /\d/.test(block[i + 1] ?? "")) continue;
+    let end = i + 1;
+    while (end < block.length && /["')\]}»”]/.test(block[end])) end++;
+    const piece = block.slice(start, end).trim();
+    if (piece) out.push(piece);
+    start = end;
+    i = end - 1;
+  }
+  const tail = block.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+/**
+ * Trim an overlap tail so a chunk never starts with a partial word: when the cut
+ * landed inside a word (last char before the cut and first char of the tail are
+ * both word characters), the leading fragment is dropped.
+ */
+function snapToWordStart(tail: string, charBeforeCut: string): string {
+  const at = tail.search(/\S/);
+  const body = at <= 0 ? tail : tail.slice(at);
+  if (!body) return body;
+  const startsMidWord = /[\p{L}\p{N}_]/u.test(charBeforeCut) && /[\p{L}\p{N}_]/u.test(body[0]);
+  if (!startsMidWord) return body;
+  const space = body.search(/\s/);
+  return space === -1 ? body : body.slice(space).trimStart();
+}
+
+/** Last whitespace break inside the budget, so a hard cut avoids mid-word cuts. */
+function lastBreak(candidate: string, max: number): number {
+  for (let i = Math.min(candidate.length, max) - 1; i > Math.floor(max * 0.6); i--) {
+    if (/\s/.test(candidate[i])) return i + 1;
+  }
+  return max;
 }
 
 function splitLongText(text: string, max: number): string[] {
@@ -70,7 +116,7 @@ function splitLongText(text: string, max: number): string[] {
       candidate.lastIndexOf("\n"),
       candidate.lastIndexOf(", ")
     );
-    const pos = cut > Math.floor(max * 0.6) ? cut + 1 : max;
+    const pos = cut > Math.floor(max * 0.6) ? cut + 1 : lastBreak(candidate, max);
     parts.push(rest.slice(0, pos).trim());
     rest = rest.slice(pos);
   }
@@ -78,9 +124,18 @@ function splitLongText(text: string, max: number): string[] {
   return parts;
 }
 
+/** Separator that never mangles code: newline if either side has one. */
+function joiner(left: string, right: string): string {
+  if (!left) return "";
+  if (left.endsWith("\n") || right.startsWith("\n")) return "";
+  return left.includes("\n") || right.includes("\n") ? "\n" : " ";
+}
+
 export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
   const maxChars = options.maxChars ?? DEFAULT_MAX;
   const overlapChars = options.overlapChars ?? DEFAULT_OVERLAP;
+  if (!Number.isFinite(maxChars) || maxChars < 1) throw new RangeError("chunkText: maxChars must be >= 1");
+  if (!Number.isFinite(overlapChars) || overlapChars < 0) throw new RangeError("chunkText: overlapChars must be >= 0");
   const chunks: Chunk[] = [];
   let cursor = 0;
 
@@ -95,10 +150,14 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
   };
 
   const paragraphs = splitIntoParagraphs(text);
+  const overlap = Math.min(overlapChars, Math.floor(maxChars / 2));
+  /** The tail carried into the next chunk; "" when overlapChars is 0. */
+  const carry = (emitted: string) =>
+    overlap > 0 ? snapToWordStart(emitted.slice(-overlap), emitted.slice(-overlap - 1, -overlap)) : "";
 
   let window = "";
   for (const para of paragraphs) {
-    let pieces: string[] = [];
+    let pieces: string[];
     if (para.length > maxChars) {
       pieces = splitLongText(para, maxChars);
     } else {
@@ -108,15 +167,33 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
 
     for (const piece of pieces) {
       if (piece.length > maxChars) {
-        // Rare pathological case: keep as-is, hard split.
-        for (const hard of splitLongText(piece, maxChars)) emit(hard);
+        // A single sentence longer than maxChars: hard-split it. The pending
+        // window must be flushed first, otherwise the text collected so far is
+        // emitted twice (once here, once with the next piece appended).
+        const hards = splitLongText(piece, maxChars);
+        if (window) {
+          emit(window);
+          window = carry(window);
+        }
+        for (const hard of hards) {
+          const projectedHard = window.length + joiner(window, hard).length + hard.length;
+          if (window && projectedHard > maxChars) {
+            emit(window);
+            window = carry(window);
+          }
+          window += joiner(window, hard) + hard;
+        }
         continue;
       }
-      if (window.length + piece.length + 1 > maxChars && window.length >= overlapChars) {
+      const projected = window.length + joiner(window, piece).length + piece.length;
+      if (window && projected > maxChars) {
         emit(window);
-        window = window.slice(-overlapChars);
+        // Overlap carries the tail of the previous chunk. overlap === 0 must
+        // reset the window: slice(-0) returns the whole string, which used to
+        // duplicate the previous chunk and grow it without bound.
+        window = carry(window);
       }
-      window += (window ? " " : "") + piece;
+      window += joiner(window, piece) + piece;
     }
   }
 

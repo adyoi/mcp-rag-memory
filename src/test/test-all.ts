@@ -32,6 +32,16 @@ function toolText(res: unknown): string {
   return first && typeof first.text === "string" ? first.text : "";
 }
 
+/** True when fn throws/rejects — used for guard checks. */
+async function rejects(fn: () => unknown, match?: RegExp): Promise<boolean> {
+  try {
+    await fn();
+    return false;
+  } catch (e) {
+    return match ? match.test((e as Error).message) : true;
+  }
+}
+
 async function main() {
   console.log("=== RAG + CONTEXT MANAGEMENT TEST SUITE ===\n");
 
@@ -112,7 +122,7 @@ async function main() {
   const sFiltered = await rag.searchDocs("jwt authentication RSA", 5, 0.08, { source: "scratch" });
   check("search filter: source narrows results", sFiltered.length === 0, JSON.stringify(sFiltered));
 
-  const authDocId = (await rag.listDocuments()).find((d) => d.title === "Auth architecture")?.id as string;
+  const authDocId = rag.listDocuments().documents.find((d) => d.title === "Auth architecture")?.id as string;
   const sDocFiltered = await rag.searchDocs("jwt authentication RSA", 5, 0.08, { docId: authDocId });
   check("search filter: doc_id keeps only that document", sDocFiltered.length > 0 && sDocFiltered.every((h) => h.docId === authDocId && h.docTitle === "Auth architecture"), JSON.stringify(sDocFiltered[0] ?? null));
 
@@ -121,8 +131,11 @@ async function main() {
   check("retrieve reports tokens", retrieved.totalTokens >= retrieved.chunks[0]?.tokenCount);
   check("retrieve ranks auth content", retrieved.chunks[0]?.content.includes("JWT"), retrieved.chunks[0]?.content);
 
-  const docs = await rag.listDocuments();
-  check("listDocuments returns 2 docs", docs.length === 2);
+  const docs = rag.listDocuments();
+  check("listDocuments returns 2 docs", docs.documents.length === 2 && docs.total === 2);
+  check("listDocuments paginates", rag.listDocuments({ limit: 1 }).documents.length === 1 && rag.listDocuments({ limit: 1 }).total === 2);
+  check("listDocuments offset skips", rag.listDocuments({ limit: 1, offset: 1 }).documents[0]?.id !== docs.documents[0]?.id);
+  check("listDocuments clamps limit", rag.listDocuments({ limit: 10_000 }).total === 2);
   const stats = await rag.documentStats();
   check("documentStats correct", stats.documents === 2 && stats.chunks === doc1.chunks + doc2.chunks, JSON.stringify(stats));
 
@@ -207,8 +220,8 @@ async function main() {
 
   const d = await rag.deleteDocument(doc3.docId);
   check("deleteDocument works", d.deleted === true);
-  const docsAfter = await rag.listDocuments();
-  check("document removed after delete", docsAfter.length === 2);
+  const docsAfter = rag.listDocuments();
+  check("document removed after delete", docsAfter.total === 2);
 
   // ingestDirectory skips junk dirs and tolerates per-file failures.
   const srcDir = path.join(TEST_DB, "ingest-src");
@@ -223,6 +236,7 @@ async function main() {
   const dirResult = await rag.ingestDirectory(srcDir, { recursive: true });
   const dirTitles = dirResult.ingested.map((r) => r.title);
   check("ingest-dir ingests source + txt files", dirResult.ingested.length === 13, `got ${dirResult.ingested.length}`);
+  check("ingest-dir reports ingestedCount", dirResult.ingestedCount === 13, JSON.stringify(dirResult.ingestedCount));
   check("ingest-dir skips .git and node_modules", !dirTitles.includes("config.ts") && !dirTitles.includes("dep.ts"), JSON.stringify(dirTitles));
   check("ingest-dir includes txt default ext", dirTitles.includes("notes.txt"));
   check("ingest-dir reports no failures", dirResult.skipped.length === 0, JSON.stringify(dirResult.skipped));
@@ -303,6 +317,23 @@ async function main() {
   delete process.env.RAG_PRUNE_IMPORTANCE;
   delete process.env.RAG_PRUNE_AGE_DAYS;
 
+  // A corrupted tags column must not break the read paths (json_each raises on
+  // malformed JSON, and the tag filter is the one query that touches it).
+  db.prepare("INSERT INTO memories (id, type, content, importance, tags, recall_count, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)").run(
+    "corrupt-tags",
+    "fact",
+    "Memory with a corrupted tags column.",
+    0.4,
+    "{not-json",
+    0,
+    Date.now(),
+    Date.now()
+  );
+  const corruptListed = mem.listMemories();
+  check("malformed tags does not break listing", corruptListed.some((m) => m.id === "corrupt-tags" && m.tags.length === 0), JSON.stringify(corruptListed.find((m) => m.id === "corrupt-tags")?.tags));
+  check("tag filter survives a malformed row", mem.listMemories({ tag: "alpha" }).length === 1, JSON.stringify(mem.listMemories({ tag: "alpha" })));
+  db.prepare("DELETE FROM memories WHERE id = ?").run("corrupt-tags");
+
   /* ================== 6. MCP SERVER ROUND-TRIP ================== */
   console.log("\n=== 6. MCP Server Round-Trip (via SDK Client) ===");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -341,8 +372,13 @@ async function main() {
 
     // Note: shared DB — docs from earlier in-process ingestion are visible.
     const listDocs = await client.callTool({ name: "rag_list_documents", arguments: {} });
-    const listText = toolText(listDocs);
-    check("rag_list_documents returns existing docs", JSON.parse(listText).length >= 2);
+    const listJson = JSON.parse(toolText(listDocs));
+    check("rag_list_documents returns existing docs", Array.isArray(listJson.documents) && listJson.documents.length >= 2, JSON.stringify(listJson).slice(0, 120));
+    const pagedDocs = await client.callTool({ name: "rag_list_documents", arguments: { limit: 1 } });
+    const pagedJson = JSON.parse(toolText(pagedDocs));
+    check("rag_list_documents honours limit", pagedJson.documents.length === 1 && pagedJson.total >= 2, JSON.stringify(pagedJson).slice(0, 120));
+    const badLimit = await client.callTool({ name: "rag_list_documents", arguments: { limit: 100_000 } });
+    check("rag_list_documents rejects out-of-range limit", toolText(badLimit).length > 0);
 
     const ingest = await client.callTool({
       name: "rag_ingest_text",
@@ -434,7 +470,7 @@ async function main() {
   const ld = await sess.ingestLogDir(logDir);
   check("ingest-logs-dir counts files and stays idempotent", ld.files === 1 && ld.newDocs === 0 && ld.deduplicated === 2, JSON.stringify(ld));
 
-  const withMeta = (await rag.listDocuments()).find((d) => (d as { title: string }).title.includes("ses-demo")) as { source?: string; metadata?: unknown };
+  const withMeta = rag.listDocuments().documents.find((d) => (d as { title: string }).title.includes("ses-demo")) as { source?: string; metadata?: unknown };
   check("listDocuments exposes source metadata", withMeta?.source === "session-log" && typeof withMeta?.metadata === "string", JSON.stringify(withMeta));
 
   /* ================== 8. Env loader + entry shim ================== */
@@ -446,9 +482,14 @@ async function main() {
       "# comment line",
       "RAG_ENVTEST_ALPHA=hello",
       'RAG_ENVTEST_QUOTED="two words"',
+      'RAG_ENVTEST_QCOMMENT="two words" # trailing note',
+      "RAG_ENVTEST_SINGLE='raw value'",
       "export RAG_ENVTEST_EXPORT=ok",
       "RAG_ENVTEST_INLINE=val # keep the note out",
       "RAG_ENVTEST_EMPTY=",
+      "AWS_SECRET_ACCESS_KEY=must-not-leak",
+      "RAG_ENVTEST_HASH=a#b",
+      "1BAD_KEY=nope",
     ].join("\n"),
     "utf8"
   );
@@ -457,10 +498,14 @@ async function main() {
   check("env: existing var never overridden", process.env.RAG_ENVTEST_PRESET === "existing");
   check("env: plain KEY=VALUE", process.env.RAG_ENVTEST_ALPHA === "hello", process.env.RAG_ENVTEST_ALPHA);
   check("env: quoted value stripped", process.env.RAG_ENVTEST_QUOTED === "two words", process.env.RAG_ENVTEST_QUOTED);
+  check("env: comment after closing quote stripped", process.env.RAG_ENVTEST_QCOMMENT === "two words", process.env.RAG_ENVTEST_QCOMMENT);
+  check("env: single quotes stripped", process.env.RAG_ENVTEST_SINGLE === "raw value", process.env.RAG_ENVTEST_SINGLE);
   check("env: export prefix stripped", process.env.RAG_ENVTEST_EXPORT === "ok", process.env.RAG_ENVTEST_EXPORT);
   check("env: inline comment stripped", process.env.RAG_ENVTEST_INLINE === "val", process.env.RAG_ENVTEST_INLINE);
   check("env: empty value stored as ''", process.env.RAG_ENVTEST_EMPTY === "", JSON.stringify(process.env.RAG_ENVTEST_EMPTY));
-  for (const k of ["RAG_ENVTEST_ALPHA", "RAG_ENVTEST_QUOTED", "RAG_ENVTEST_EXPORT", "RAG_ENVTEST_INLINE", "RAG_ENVTEST_EMPTY", "RAG_ENVTEST_PRESET"]) delete process.env[k];
+  check("env: hash without preceding space kept", process.env.RAG_ENVTEST_HASH === "a#b", process.env.RAG_ENVTEST_HASH);
+  check("env: foreign keys are not injected", process.env.AWS_SECRET_ACCESS_KEY === undefined, String(process.env.AWS_SECRET_ACCESS_KEY));
+  for (const k of ["RAG_ENVTEST_ALPHA", "RAG_ENVTEST_QUOTED", "RAG_ENVTEST_QCOMMENT", "RAG_ENVTEST_SINGLE", "RAG_ENVTEST_EXPORT", "RAG_ENVTEST_INLINE", "RAG_ENVTEST_EMPTY", "RAG_ENVTEST_HASH", "RAG_ENVTEST_PRESET"]) delete process.env[k];
 
   // End-to-end: the published entry shim must load RAG_ENV_FILE before booting the
   // server, so the store lands where the .env points. Spawned as a real process
@@ -527,7 +572,139 @@ async function main() {
   check("entry: RAG_ENV_FILE honored (dbDir from .env)", parsedStat.dbDir === path.resolve(envDir), String(parsedStat.dbDir));
   check("entry: exists on disk", fs.existsSync(path.join(ROOT, "src", "index.ts")));
 
-  /* ================== 9. RESULTS ================== */
+  /* ================== 9. HARDENING REGRESSIONS ================== */
+  console.log("\n=== 9. Hardening Regressions ===");
+
+  // FTS index must be populated, not just created: a fresh table with no backfill
+  // makes every pre-existing chunk invisible to keyword search forever.
+  const chunkCount = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
+  const ftsCount = (db.prepare("SELECT COUNT(*) AS c FROM chunks_fts").get() as { c: number }).c;
+  check("chunks_fts backfilled from chunks", ftsCount === chunkCount, `chunks=${chunkCount} fts=${ftsCount}`);
+
+  // FTS5 syntax characters in a user query used to be passed to MATCH raw and
+  // throw "fts5: syntax error near ...".
+  let ftsBoom = "";
+  try {
+    await rag.searchDocs('zzzqx AND (unbalanced "quote NEAR/2', 5);
+  } catch (e) {
+    ftsBoom = (e as Error).message;
+  }
+  check("FTS special characters do not throw", ftsBoom === "", ftsBoom);
+  const partialTerm = await rag.searchDocs("uthenticatio", 5, 0);
+  check("trigram substring search works", partialTerm.length > 0, JSON.stringify(partialTerm.length));
+
+  // min_score must be a real filter on the final fused score: every returned hit
+  // clears the threshold, and raising it never widens the result set.
+  const loose = await rag.searchDocs("jwt authentication RSA", 10, 0.05);
+  const strict = await rag.searchDocs("jwt authentication RSA", 10, 0.9);
+  check("min_score filters on the final score", strict.every((h) => h.score >= 0.9) && strict.length <= loose.length, JSON.stringify({ loose: loose.length, strict: strict.length }));
+  check("min_score 0 keeps hits", loose.length > 0);
+  check("scores stay in 0..1", loose.every((h) => h.score >= 0 && h.score <= 1), JSON.stringify(loose.map((h) => h.score)));
+
+  // Cross-connection cache invalidation: a second process/connection writing to
+  // the store must be visible without reopening this one (the CLI, the plugin
+  // and a second MCP server all write through their own handles).
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(DB_PATH);
+  const now = Date.now();
+  const foreignText = "quixoticflimflam external writer inserted this paragraph directly";
+  other.exec("BEGIN IMMEDIATE;");
+  other
+    .prepare("INSERT INTO documents (id, title, source, content_type, metadata, chunk_count, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run("foreign-doc", "Foreign write", "external", "text", "{}", 1, now, now);
+  other
+    .prepare("INSERT INTO chunks (id, doc_id, idx, content, embedding, token_count, created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("foreign-chunk", "foreign-doc", 0, foreignText, Buffer.from(packVector(embed(foreignText))), 12, now);
+  other.exec("COMMIT;");
+  other.close();
+  const foreignHit = await rag.searchDocs("quixoticflimflam", 5, 0);
+  check("search sees another connection's write", foreignHit.some((h) => h.docId === "foreign-doc"), JSON.stringify(foreignHit[0] ?? null));
+  rag.deleteDocument("foreign-doc");
+  check("foreign doc deleted", !rag.listDocuments({ limit: 1000 }).documents.some((d) => d.id === "foreign-doc"));
+
+  // dedupScope: identical text in two scopes must NOT collapse into one document.
+  const scopedText = "identical payload for the dedup scope check";
+  const sA = await rag.ingestText(scopedText, "Scope A", { dedupScope: "sess-a:1" });
+  const sB = await rag.ingestText(scopedText, "Scope B", { dedupScope: "sess-b:1" });
+  check("different dedup scopes keep both docs", sA.docId !== sB.docId && sB.deduplicated === false, JSON.stringify({ a: sA.docId, b: sB.docId }));
+  const sB2 = await rag.ingestText(scopedText, "Scope B again", { dedupScope: "sess-b:1" });
+  check("same dedup scope dedupes", sB2.deduplicated === true && sB2.docId === sB.docId, JSON.stringify(sB2));
+  rag.deleteDocument(sA.docId);
+  rag.deleteDocument(sB.docId);
+
+  // consolidate must not eat distinct-but-similar templated memories. These two
+  // are ~0.95 cosine on the hashing embedder but say different things.
+  const beforeTpl = mem.memoryStats().memories;
+  await mem.remember({ content: "The user's favourite editor is Neovim.", type: "preference", importance: 0.6 });
+  await mem.remember({ content: "The user's favourite terminal is WezTerm.", type: "preference", importance: 0.6 });
+  const tplReport = await mem.consolidate();
+  check("consolidate keeps distinct templated memories", tplReport.removedDuplicates === 0, JSON.stringify(tplReport));
+  check("templated memories both survive", mem.memoryStats().memories === beforeTpl + 2, JSON.stringify(mem.memoryStats().memories));
+  check("consolidate reports totals", tplReport.totals.memories === mem.memoryStats().memories, JSON.stringify(tplReport.totals));
+
+  // Chunker guards. An absurd overlap is clamped (not rejected) — the guarantee
+  // that matters is that no chunk ever exceeds maxChars and nothing loops.
+  const clampedOverlap = chunkText(longText, { maxChars: 200, overlapChars: 5000 });
+  check("absurd overlap is clamped, chunks stay bounded", clampedOverlap.length > 1 && clampedOverlap.every((c) => c.text.length <= 200), JSON.stringify(clampedOverlap.length));
+  check("chunkText rejects non-finite max", await rejects(() => chunkText("some text here", { maxChars: Number.NaN })));
+  check("chunkText rejects negative overlap", await rejects(() => chunkText("some text here", { maxChars: 200, overlapChars: -1 })));
+  const noOverlapText = Array.from({ length: 40 }, (_, i) => `Clause ${i} holds unique marker ${i * 7 + 3} plus filler words for boundary checks.`).join(" ");
+  const noOverlap = chunkText(noOverlapText, { maxChars: 300, overlapChars: 0 });
+  // Whitespace-normalized: the chunker re-joins sentences with " " or "\n",
+  // so a raw char-by-char comparison breaks on the joiner, not on real overlap.
+  // The fixture must be non-repetitive — identical clauses would match by
+  // coincidence and prove nothing.
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const carriesContext = (prev: string, next: string) => {
+    const tail = norm(prev).slice(-40);
+    return tail.length === 40 && norm(next).includes(tail);
+  };
+  check("overlap 0 shares no text between chunks", noOverlap.length > 1 && noOverlap.every((c, i) => i === 0 || !carriesContext(noOverlap[i - 1].text, c.text)), JSON.stringify(noOverlap.length));
+  check("overlap 0 keeps every chunk bounded", noOverlap.every((c) => c.text.length <= 300), JSON.stringify(noOverlap.map((c) => c.text.length)));
+  const withOverlap = chunkText(noOverlapText, { maxChars: 300, overlapChars: 80 });
+  check("overlap 80 carries context forward", withOverlap.length > 1 && withOverlap.some((c, i) => i > 0 && carriesContext(withOverlap[i - 1].text, c.text)), JSON.stringify(withOverlap.length));
+  const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after the fence.", { maxChars: 200 });
+  check("fenced code is kept intact", codeChunked.length >= 1 && codeChunked[0].text.includes("```"), JSON.stringify(codeChunked[0]?.text.slice(0, 60)));
+
+  // Session DB discovery must be read at call time, not frozen at import.
+  const sessDbPath = path.join(TEST_DB, "fake-opencode.db");
+  check("opencodeDbs() empty before the env var is set", !sess.opencodeDbs().some((p) => p === path.resolve(sessDbPath)));
+  const { listOpenCodeSessions } = await import("../session/transcript.js");
+  check("listOpenCodeSessions returns a list", Array.isArray(listOpenCodeSessions(5)));
+  process.env.OPENCODE_DB = sessDbPath;
+  new DatabaseSync(sessDbPath).close();
+  check("opencodeDbs() picks up a late OPENCODE_DB", sess.opencodeDbs().some((p) => p === path.resolve(sessDbPath)), JSON.stringify(sess.opencodeDbs()));
+  delete process.env.OPENCODE_DB;
+  check("opencodeDbs() drops it again", !sess.opencodeDbs().some((p) => p === path.resolve(sessDbPath)));
+  await rejects(async () => sess.getSessionTranscript("no-such-session"), /not found|No opencode/i);
+
+  // clean-all: the old list-then-delete loop only cleared the first 100 rows.
+  const bulk = [];
+  for (let i = 0; i < 105; i++) {
+    bulk.push(await rag.ingestText(`bulk payload number ${i} for the destructive wipe check`, `Bulk ${i}`));
+  }
+  const beforeWipe = rag.documentStats().documents;
+  check("bulk docs ingested", beforeWipe >= 105, JSON.stringify(beforeWipe));
+  const { spawnSync } = await import("node:child_process");
+  // Run the script directly through tsx (no npx) — the MCP round-trip above
+  // already covers the npx path, and npx.cmd cannot be spawned without a shell.
+  const runCleanAll = (args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", path.join("scripts", "clean-all.ts"), ...args], {
+      cwd: ROOT,
+      env: { ...process.env, RAG_DB_DIR: TEST_DB },
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+  const clean = runCleanAll(["--force"]);
+  check("clean-all exits cleanly", clean.status === 0, `${clean.status}: ${clean.stderr?.slice(-400)}`);
+  const remainingDocs = (db.prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
+  check("clean-all wiped every document", remainingDocs === 0, JSON.stringify({ remainingDocs, before: beforeWipe }));
+  check("clean-all wiped chunks", (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c === 0);
+  check("clean-all wiped memories", (db.prepare("SELECT COUNT(*) AS c FROM memories").get() as { c: number }).c === 0);
+  const noForce = runCleanAll([]);
+  check("clean-all refuses without --force", noForce.status === 1, String(noForce.status));
+
+  /* ================== 10. RESULTS ================== */
   console.log("\n=== RESULTS ===");
   console.log(`  Total:  ${passed + failed}`);
   console.log(`  Passed: ${passed}`);

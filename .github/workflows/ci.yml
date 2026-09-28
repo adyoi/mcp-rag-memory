@@ -8,11 +8,18 @@ on:
 jobs:
   test:
     name: Node ${{ matrix.node }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         node: [22, 24]
+        exclude:
+          # 22 is LTS-floor only; run the full matrix on Linux and keep one
+          # Windows leg to catch path/SQLite/lock differences (this server is
+          # spawned as stdio MCP on Windows far more than anything else).
+          - os: windows-latest
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,6 +28,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Type-check (src + scripts + plugin)
+        run: npm run typecheck
       - name: Type-check + build
         run: npm run build
       - name: Lint

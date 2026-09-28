@@ -222,7 +222,7 @@
       <div class="badge" style="--r:-2deg"><span>Node</span>js</div>
       <div class="badge" style="--r:1.5deg"><span>TS</span> TypeScript</div>
       <div class="badge" style="--r:-1deg"><span>SQL</span> SQLite</div>
-      <div class="badge" style="--r:2deg"><span>18</span> Tools</div>
+      <div class="badge" style="--r:2deg"><span>19</span> Tools</div>
       <div class="badge" style="--r:-1.5deg">Bisa offline</div>
     </div>
   </section>
@@ -270,11 +270,11 @@
   <h2><span class="emoji-badge">⚡</span>Mulai cepat</h2>
   <div class="bubble" style="width:max-content;max-width:100%">3 perintah mudah, langsung jalan! 🎩</div>
   <pre><code>npm install
-npm test                 # 114 cek: unit + round-trip MCP
+npm test                 # 158 cek: unit + round-trip MCP
 npm run lint             # oxlint
 npm run build            # kompilasi ke dist/
-npm run cli -- stats     # playground CLI
-npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
+npm run cli -- docs      # playground CLI
+npx mcp-rag-memory       # langsung jalan dari npm (butuh Node >= 22.12)</code></pre>
 
   <h2><span class="emoji-badge">🌍</span>Satu memori, semua agent</h2>
   <div class="card-grid">
@@ -310,7 +310,8 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
     <tr><td><code>rag_ingest_dir</code></td><td>Input satu folder penuh!</td></tr>
     <tr><td rowspan="2">RAG Cari</td><td><code>rag_search</code></td><td>Cari hybrid (BM25 + vektor), chunk terurut</td></tr>
     <tr><td><code>rag_retrieve</code></td><td>Blok konteks siap-suntik</td></tr>
-    <tr><td rowspan="2">RAG Dokumen</td><td><code>rag_list_documents</code></td><td>Inventaris dokumen</td></tr>
+    <tr><td rowspan="3">RAG Dokumen</td><td><code>rag_list_documents</code></td><td>Inventaris dokumen (ada limit/offset)</td></tr>
+    <tr><td><code>rag_document_stats</code></td><td>Jumlah dokumen &amp; chunk</td></tr>
     <tr><td><code>rag_delete_document</code></td><td>Hapus dokumen + chunk</td></tr>
     <tr><td>Sinkron Sesi</td><td><code>rag_sync_session</code></td><td>Input sesi opencode masuk store RAG</td></tr>
     <tr><td rowspan="6">Memori</td><td><code>memory_remember</code></td><td>Simpan memori jangka panjang</td></tr>
@@ -327,7 +328,7 @@ npx mcp-rag-memory       # langsung jalan dari npm</code></pre>
 npm run sync-latest -- --dir "D:/Project/my-app"   # sesi terbaru di workspace itu
 npm run sync-session -- ses_abc123                  # sesi tertentu
 npm run cli -- sessions                             # daftar sesi terbuka</code></pre>
-  <p style="font-size:.88rem">Data dibaca dari DB opencode sendiri (<code>~/.local/share/opencode/opencode.db</code>), aman karena dedup SHA-256 — jalan berulang-ulang tidak bikin dobel. Input panjang otomatis dipadatkan ke <strong>point inti</strong> (ekstraktif, tanpa LLM) supaya storage ramping; ketik ulang tetap utuh. Tool MCP <code>rag_sync_session</code> nyediain akses yang sama lewat MCP.</p>
+  <p style="font-size:.88rem">Data dibaca dari DB opencode sendiri (<code>~/.local/share/opencode/opencode.db</code>), aman karena dedup per <code>(source, sesi, timestamp)</code> — jalan berulang-ulang tidak bikin dobel, tapi pesan sama di sesi berbeda tetap jadi dokumen terpisah. Input panjang otomatis dipadatkan ke <strong>point inti</strong> (ekstraktif, tanpa LLM) supaya storage ramping; ketik ulang tetap utuh. Tool MCP <code>rag_sync_session</code> nyediain akses yang sama lewat MCP.</p>
 
   <h2><span class="emoji-badge">🏗️</span>Arsitektur</h2>
   <div class="arch">

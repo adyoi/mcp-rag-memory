@@ -25,28 +25,50 @@ export interface SearchOptions {
   minScore?: number;
   collection?: "chunks" | "memories";
   onlyKeys?: Set<string>;
+  /** Restrict to chunks of these documents (cheap: doc ids, not chunk ids). */
+  onlyDocIds?: Set<string>;
 }
 
 type SearchMode = "hybrid" | "vector" | "keyword";
-const SEARCH_MODE: SearchMode =
-  process.env.SEARCH_MODE === "vector" || process.env.SEARCH_MODE === "keyword"
-    ? (process.env.SEARCH_MODE as SearchMode)
-    : "hybrid";
+
+/** Read at call time (not frozen at import) so the mode can change per process/test. */
+function searchMode(): SearchMode {
+  const raw = process.env.SEARCH_MODE;
+  return raw === "vector" || raw === "keyword" ? raw : "hybrid";
+}
 
 const RRF_K = 60;
 const LIST_CAP = 60;
 
-/* In-memory vector cache — invalidated on every write. */
-let cacheChunks: Array<{ id: string; id2: string; vec: Float64Array }> | null = null;
+/* In-memory vector cache — invalidated on local writes and whenever another
+ * process commits to the shared store (CLI, auto-save plugin, second server). */
+let cacheChunks: Array<{ id: string; id2: string; docId: string; vec: Float64Array }> | null = null;
 let cacheMemories: Array<{ id: string; vec: Float64Array }> | null = null;
+let cacheDataVersion: number | null = null;
 
 export function invalidateVectorCache(): void {
   cacheChunks = null;
   cacheMemories = null;
+  // Re-arm the watch: the version we recorded describes the store *before* the
+  // local write, so the next load must not treat our own commit as a foreign one.
+  cacheDataVersion = null;
+}
+
+/** PRAGMA data_version changes when another connection commits; ours never does. */
+function dataVersion(): number {
+  const row = getDB().prepare("PRAGMA data_version").get() as { data_version: number } | undefined;
+  return row ? Number(row.data_version) : 0;
+}
+
+function dropStaleCache(): void {
+  if (cacheDataVersion === null) return;
+  const current = dataVersion();
+  if (current !== cacheDataVersion) invalidateVectorCache();
 }
 
 function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Float64Array }> {
   const db = getDB();
+  dropStaleCache();
   if (table === "memories") {
     if (cacheMemories) return cacheMemories;
     const rows = db.prepare("SELECT id, embedding FROM memories").all() as Array<{ id: string; embedding: Uint8Array | null }>;
@@ -56,19 +78,21 @@ function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Flo
       if (vec) out.push({ id: r.id, vec });
     }
     cacheMemories = out;
+    cacheDataVersion = dataVersion();
     return out;
   }
   // chunks keep their implicit rowid too, for FTS bookkeeping.
   if (cacheChunks) return cacheChunks;
   const rows = db
-    .prepare("SELECT id, rowid AS rid, embedding FROM chunks")
-    .all() as Array<{ id: string; rid: number; embedding: Uint8Array | null }>;
-  const out: Array<{ id: string; id2: string; vec: Float64Array }> = [];
+    .prepare("SELECT id, doc_id, rowid AS rid, embedding FROM chunks")
+    .all() as Array<{ id: string; doc_id: string; rid: number; embedding: Uint8Array | null }>;
+  const out: Array<{ id: string; id2: string; docId: string; vec: Float64Array }> = [];
   for (const r of rows) {
     const vec = unpackVector(r.embedding);
-    if (vec) out.push({ id: r.id, id2: String(r.rid), vec });
+    if (vec) out.push({ id: r.id, id2: String(r.rid), docId: r.doc_id, vec });
   }
   cacheChunks = out;
+  cacheDataVersion = dataVersion();
   return out;
 }
 
@@ -94,18 +118,33 @@ export function vectorSearch(
 
   const rows = loadVectors(table);
   const only = options.onlyKeys;
+  const onlyDocs = options.onlyDocIds;
   const scored: Array<{ key: string; score: number }> = [];
   for (const r of rows) {
     if (only && !only.has(r.id)) continue;
-    const score = dotProduct(queryVec, r.vec);
+    if (onlyDocs) {
+      const docId = (r as { docId?: string }).docId;
+      if (!docId || !onlyDocs.has(docId)) continue;
+    }
+    // Clamp to [-1, 1]: these vectors are L2-normalized, but a hand-written or
+    // future provider's blob must not leak scores > 1 past min_score clamps.
+    const score = Math.max(-1, Math.min(1, dotProduct(queryVec, r.vec)));
     if (score >= minScore) scored.push({ key: r.id, score });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK);
 }
 
-/** BM25 keyword hits via FTS5, best-first. Returns empty when the query has no terms. */
-function ftsHits(queryText: string, limit: number, allowedIds?: Set<string>): Array<{ key: string }> {
+/**
+ * BM25 keyword hits via FTS5, best-first. Returns empty when the query has no terms.
+ * Filters are pushed into SQL (no id materialization) and every token is quoted as
+ * an FTS5 string, so punctuation like "opencode-db" cannot void the keyword leg.
+ */
+function ftsHits(
+  queryText: string,
+  limit: number,
+  filters?: SearchChunkFilters
+): Array<{ key: string }> {
   const tokens = queryText
     .toLowerCase()
     .replace(/[^\p{L}\p{N}_-]+/gu, " ")
@@ -114,30 +153,42 @@ function ftsHits(queryText: string, limit: number, allowedIds?: Set<string>): Ar
     .filter(Boolean)
     .slice(0, 10);
   if (tokens.length === 0) return [];
-  if (allowedIds && allowedIds.size === 0) return [];
   const db = getDB();
+  const clauses: string[] = [];
+  const params: Array<string> = [];
+  if (filters?.docId) {
+    clauses.push("c.doc_id = ?");
+    params.push(filters.docId);
+  }
+  if (filters?.source) {
+    clauses.push("d.source = ?");
+    params.push(filters.source);
+  }
+  const filterClause = clauses.length ? ` AND ${clauses.join(" AND ")}` : "";
   try {
-    const idClause = allowedIds && allowedIds.size > 0 ? "AND c.id IN " + inPlaceholders(allowedIds.size) : "";
     const rows = db
       .prepare(
         `SELECT c.id
            FROM chunks_fts
            JOIN chunks c ON c.rowid = chunks_fts.rowid
-          WHERE chunks_fts MATCH ? ${idClause}
+           JOIN documents d ON d.id = c.doc_id
+          WHERE chunks_fts MATCH ?${filterClause}
           ORDER BY bm25(chunks_fts)
           LIMIT ?`
       )
-      .all(tokens.join(" "), ...(allowedIds ? [...allowedIds] : []), limit) as Array<{ id: string }>;
+      .all(quoteFtsQuery(tokens), ...params, limit) as Array<{ id: string }>;
     return rows.map((r) => ({ key: r.id }));
-  } catch {
-    // FTS5 unavailable or unsupported query syntax — degrade to vector-only.
+  } catch (e) {
+    // FTS5 unavailable or an unsupported query — degrade to the vector leg
+    // instead of failing the whole search, but say so on stderr.
+    process.stderr.write(`rag: FTS5 keyword leg unavailable (${(e as Error).message})\n`);
     return [];
   }
 }
 
-/** "?, ?, ..." placeholder string for n bind params. */
-function inPlaceholders(n: number): string {
-  return `(${Array.from({ length: n }, () => "?").join(", ")})`;
+/** Quote each token as an FTS5 string literal so "-" and other syntax stay literal. */
+function quoteFtsQuery(tokens: string[]): string {
+  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
 }
 
 /** Reciprocal-rank fusion over multiple ranked lists of {key}. */
@@ -150,7 +201,6 @@ function rrfMerge(lists: Array<Array<{ key: string }>>): Map<string, number> {
   }
   return scores;
 }
-
 export interface SearchChunkFilters {
   docId?: string;
   source?: string;
@@ -164,58 +214,73 @@ export interface SearchChunkOptions {
 }
 
 /**
- * Hybrid search: FTS5 BM25 keyword + vector, fused with RRF.
+ * Hybrid search: FTS5 BM25 keyword + vector, fused with RRF for ranking.
  * Controlled by SEARCH_MODE=hybrid|vector|keyword (default hybrid).
+ *
+ * The reported `score` is always on a 0..1 relevance scale — the vector cosine
+ * when the chunk has one, otherwise a rank-decayed keyword score — so `minScore`
+ * means the same thing in every mode (RRF only decides the order).
  */
 export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): SearchHit[] {
   const { queryText = "", topK, minScore, filters } = opts;
   const db = getDB();
+  const mode = searchMode();
 
-  // Resolve docId/source filters once, BEFORE ranking, so unfiltered chunks can
-  // never out-rank a filtered one and squeeze it out of the top-K.
-  let allowedIds: Set<string> | undefined;
+  // Resolve the doc filter BEFORE ranking so unfiltered chunks can never
+  // out-rank a filtered one and squeeze it out of the top-K. Document ids, not
+  // chunk ids: one row per document instead of one per chunk.
+  let allowedDocIds: Set<string> | undefined;
   if (filters && (filters.docId || filters.source)) {
     const clauses: string[] = [];
-    const params: Array<string> = [];
+    const params: string[] = [];
     if (filters.docId) {
-      clauses.push("c.doc_id = ?");
+      clauses.push("id = ?");
       params.push(filters.docId);
     }
     if (filters.source) {
-      clauses.push("d.source = ?");
+      clauses.push("source = ?");
       params.push(filters.source);
     }
     const allowed = db
-      .prepare(
-        `SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${clauses.join(" AND ")}`
-      )
+      .prepare(`SELECT id FROM documents WHERE ${clauses.join(" AND ")}`)
       .all(...params) as Array<{ id: string }>;
-    allowedIds = new Set(allowed.map((r) => r.id));
+    allowedDocIds = new Set(allowed.map((r) => r.id));
   }
 
   const cap = Math.max(topK * 2, LIST_CAP);
 
   let vectorHits: Array<{ key: string; score: number }> = [];
-  if (SEARCH_MODE !== "keyword") {
-    vectorHits = vectorSearch(queryVec, { topK: cap, minScore, collection: "chunks", onlyKeys: allowedIds });
+  if (mode !== "keyword") {
+    vectorHits = vectorSearch(queryVec, { topK: cap, minScore, collection: "chunks", onlyDocIds: allowedDocIds });
   }
   let kwHits: Array<{ key: string }> = [];
-  if (SEARCH_MODE !== "vector") {
-    kwHits = ftsHits(queryText, cap, allowedIds);
+  if (mode !== "vector") {
+    kwHits = allowedDocIds && allowedDocIds.size === 0 ? [] : ftsHits(queryText, cap, filters);
   }
 
-  let finalIds: Array<{ key: string; score: number }>;
-  if (SEARCH_MODE === "vector") {
-    finalIds = vectorHits.slice(0, topK);
-  } else if (SEARCH_MODE === "keyword") {
-    finalIds = kwHits.slice(0, topK).map((h, i) => ({ key: h.key, score: 1 - i * 1e-6 }));
+  // Rank-decayed keyword relevance in 0..1, so keyword-only hits still carry a
+  // comparable score instead of the old flat 1.0 / RRF value.
+  const kwScore = new Map<string, number>();
+  kwHits.forEach((h, rank) => kwScore.set(h.key, 1 - rank / (kwHits.length + 1)));
+  const vectorScore = new Map<string, number>();
+  for (const h of vectorHits) vectorScore.set(h.key, h.score);
+
+  let ordered: string[];
+  if (mode === "vector") {
+    ordered = vectorHits.slice(0, topK).map((h) => h.key);
+  } else if (mode === "keyword") {
+    ordered = kwHits.slice(0, topK).map((h) => h.key);
   } else {
-    const fused = rrfMerge([vectorHits, kwHits]);
-    finalIds = [...fused.entries()]
-      .map(([key, score]) => ({ key, score }))
-      .sort((a, b) => b.score - a.score)
+    ordered = [...rrfMerge([vectorHits, kwHits]).entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key)
       .slice(0, topK);
   }
+
+  // Threshold on the final score, in every mode — not just on the vector leg.
+  const finalIds = ordered
+    .map((key) => ({ key, score: Math.max(vectorScore.get(key) ?? 0, kwScore.get(key) ?? 0) }))
+    .filter((f) => f.score >= minScore);
 
   if (finalIds.length === 0) return [];
   const ids = finalIds.map((f) => f.key);

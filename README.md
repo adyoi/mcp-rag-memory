@@ -22,12 +22,16 @@ context **across sessions**.
 
 ## Quick start
 
+Requires **Node.js ≥ 22.12** (for `node:sqlite` read-only handles and
+`busy_timeout`).
+
 ```bash
 npm install
-npm test                 # 114 checks: unit + MCP round-trip via SDK client
+npm test                 # 158 checks: unit + MCP round-trip via SDK client
 npm run lint             # oxlint
+npm run typecheck        # src + scripts + .opencode/plugin
 npm run build            # compile to dist/
-npm run cli -- stats     # CLI playground
+npm run cli -- docs      # CLI playground
 ```
 
 ### Run from npm (npx)
@@ -196,14 +200,14 @@ Restart opencode after any config change.
 | | `rag_ingest_dir` | Recursively ingest source files |
 | RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores |
 | | `rag_retrieve` | Ready-to-inject context block with token count |
-| RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory |
+| RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory (`rag_list_documents` is paginated: `limit` 1–1000, `offset`) |
 | | `rag_delete_document` | Remove a document + chunks + FTS rows |
 | Session sync | `rag_sync_session` | Ingest an opencode session's user inputs (or the latest in a workspace) |
 | Memory | `memory_remember` | Save long-term memory (type/importance/tags) |
 | | `memory_recall` | Semantic memory search (decay + recall count) |
 | | `memory_context` | Compact context block from memories for prompts |
 | | `memory_list`, `memory_get`, `memory_update`, `memory_forget` | CRUD |
-| | `memory_consolidate` | Dedupe near-identical + promote hot memories |
+| | `memory_consolidate` | Dedupe near-identical (cosine **and** word overlap) + promote hot memories |
 | | `memory_stats` | Counts, tokens, avg importance, by type |
 
 ## Run in other AI assistants
@@ -294,6 +298,7 @@ npm run cli -- recall "deployment schedule"
 npm run cli -- ingest-dir ./src/rag
 npm run cli -- search "vector similarity"
 npm run cli -- search "auth bug" --source opencode-db   # filter by source or doc-id
+npm run cli -- docs --limit 20 --offset 20            # paginated inventory
 npm run cli -- mem-context "database"
 npm run cli -- sessions              # list recent opencode sessions
 npm run cli -- sync-session ses_123  # ingest one session's inputs
@@ -398,10 +403,19 @@ Data lives in `.rag-data/rag.sqlite` (git-ignored).
 | `RAG_PRUNE_IMPORTANCE` | `0.2` | Delete memories below this importance |
 | `RAG_PRUNE_AGE_DAYS` | `90` | ...and older than this (never-recalled only) |
 | `RAG_AUTOSYNC` | `1` | Set `0` to disable the session-logger plugin's auto-sync |
-| `OPENCODE_DB` / `OPENCODE_DB_LOCAL` | `~/.local/share/opencode/*.db` | Where session transcripts are read from |
+| `OPENCODE_DB` / `OPENCODE_DB_LOCAL` | `~/.local/share/opencode/*.db` | Where session transcripts are read from (re-read on every call, so it can be set late) |
+| `RAG_SESSION_MAX_MSGS` | `500` | Cap on user messages read from one session |
 | `RAG_SESSION_CONDENSE` | `1` | Set `0` to store session inputs verbatim |
 | `RAG_SESSION_CONDENSE_MIN_CHARS` | `120` | Inputs at/below this length are saved whole |
 | `RAG_SESSION_CONDENSE_RATIO` | `0.35` | Fraction of long-input length to keep as key points |
+| `RAG_ENV_FILE` | `<cwd>/.env` | Env file to load at boot |
+
+A `.env` file can only set this server's own variables (`RAG_*`,
+`OPENCODE_*`, `EMBEDDING_*`, `SEARCH_MODE`); anything else in it is
+ignored with a warning on stderr, and a real environment variable always
+wins over the file. The loader runs from `dist/index.js` and
+`dist/cli.js` only — if you invoke `src/mcp/rag-server.ts` directly
+(TSX/`npx tsx`), import `src/env.js` yourself.
 
 ## Testing
 
@@ -504,8 +518,13 @@ instant.
 ### Opencode feels sluggish / UI lag after adding plugins
 
 Plugins that run synchronous I/O or write to stderr on every tool call
-can slow down the TUI. This project no longer ships any plugins — keep
-`opencode.json` plugin-free for clean operation.
+can slow down the TUI. This repo ships exactly one plugin
+(`.opencode/plugin/session-logger.ts`) and it is debounced to at most one
+`npx … sync-latest` per 60s, spawned detached with `stdio: "ignore"` and
+`shell: false`. If it still costs too much, set `RAG_AUTOSYNC=0` (keeps the
+plugin, disables the auto-sync) or drop the `plugin` entry from
+`opencode.json` — the MCP server and its 19 tools keep working, you just have
+to call `rag_sync_session` yourself.
 
 ---
 

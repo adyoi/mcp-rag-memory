@@ -29,6 +29,8 @@ export interface IngestFileOptions {
   source?: string;
   contentType?: string;
   metadata?: Record<string, unknown>;
+  /** Namespace the dedup hash, so equal text from different scopes is kept apart. */
+  dedupScope?: string;
 }
 
 export interface IngestDirectoryOptions {
@@ -57,8 +59,10 @@ export async function ingestText(
     throw new Error("Ingest content must be a non-empty string");
   }
 
-  // Content-hash dedup: identical documents are never re-embedded.
-  const hash = contentHash(content);
+  // Content-hash dedup: identical documents are never re-embedded. `dedupScope`
+  // keeps sources that legitimately repeat the same text apart (e.g. "ok" typed
+  // in two different sessions).
+  const hash = contentHash(`${opts.dedupScope ? `${opts.dedupScope}\u0000` : ""}${content}`);
   const existing = db
     .prepare("SELECT id, title, chunk_count FROM documents WHERE content_hash = ?")
     .get(hash) as { id: string; title: string; chunk_count: number } | undefined;
@@ -77,11 +81,19 @@ export async function ingestText(
 
   const docId = newId();
   const chunks = chunkText(content);
-
-  // All writes for one document are atomic: an embed/chunk failure rolls the
-  // whole document back instead of leaving a partial doc in the store.
-  db.exec("BEGIN");
   let tokens = 0;
+
+  // Embed BEFORE opening the transaction. The MCP SDK does not serialize tool
+  // calls, so awaiting inside a transaction let a concurrent request's writes
+  // join this one — and a failure here rolled back that other request's work.
+  const vectors: Float64Array[] = [];
+  for (const chunk of chunks) {
+    vectors.push(await embedText(chunk.text));
+  }
+
+  // All writes for one document are atomic, and the block below is fully
+  // synchronous, so no other request can interleave inside it.
+  db.exec("BEGIN IMMEDIATE;");
   try {
     db.prepare(
       `INSERT INTO documents (id, title, source, content_type, metadata, content_hash, chunk_count, created_at, updated_at)
@@ -103,14 +115,17 @@ export async function ingestText(
     );
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const vec = await embedText(chunk.text);
       tokens += chunk.tokenCount;
-      const res = insertChunk.run(newId(), docId, chunk.index, chunk.text, packVector(vec), chunk.tokenCount, ts);
+      const res = insertChunk.run(newId(), docId, chunk.index, chunk.text, packVector(vectors[i]), chunk.tokenCount, ts);
       insertFtsRow(Number(res.lastInsertRowid), chunk.text);
     }
-    db.exec("COMMIT");
+    db.exec("COMMIT;");
   } catch (e) {
-    db.exec("ROLLBACK");
+    try {
+      db.exec("ROLLBACK;");
+    } catch {
+      /* transaction already closed */
+    }
     throw e;
   }
   invalidateVectorCache();
@@ -118,14 +133,43 @@ export async function ingestText(
   return { docId, title, chunks: chunks.length, tokens, deduplicated: false };
 }
 
-function assertAllowedPath(abs: string): void {
+/** Roots are realpath'd too, so a junction/symlinked allowlist entry still matches. */
+function allowedRoots(): string[] {
   const raw = process.env.RAG_ALLOWED_DIRS;
-  if (!raw) return;
-  const roots = raw
+  if (!raw) return [];
+  return raw
     .split(/[;|,]/)
-    .map((p) => path.resolve(p.trim()))
-    .filter(Boolean);
-  if (roots.length === 0) return;
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      const abs = path.resolve(p);
+      try {
+        return fs.realpathSync(abs);
+      } catch {
+        return abs;
+      }
+    });
+}
+
+let warnedOpenAllowlist = false;
+
+/**
+ * RAG_ALLOWED_DIRS is opt-in, so by default any readable path can be ingested
+ * and then stays retrievable from every future session sharing this store. Warn
+ * once instead of silently widening the blast radius of an agent-driven tool.
+ */
+function assertAllowedPath(abs: string): void {
+  const roots = allowedRoots();
+  if (roots.length === 0) {
+    if (!warnedOpenAllowlist) {
+      warnedOpenAllowlist = true;
+      process.stderr.write(
+        "rag: RAG_ALLOWED_DIRS is not set — any readable path can be ingested and stays " +
+          `retrievable from this store. Set RAG_ALLOWED_DIRS to restrict it.\n`
+      );
+    }
+    return;
+  }
   const real = fs.realpathSync(abs);
   if (!roots.some((r) => real === r || real.startsWith(r + path.sep))) {
     throw new Error(`Path not allowed by RAG_ALLOWED_DIRS: ${abs}`);
@@ -162,16 +206,25 @@ function yieldLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+/** Cap the payload: a big directory must not return one line per file. */
+const DIR_REPORT_LIMIT = 50;
+
 export async function ingestDirectory(
   dirPath: string,
   opts: IngestDirectoryOptions = {}
-): Promise<{ ingested: IngestResult[]; skipped: string[] }> {
+): Promise<{ ingested: IngestResult[]; skipped: string[]; ingestedCount: number; skippedCount: number }> {
   const root = path.resolve(dirPath);
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     throw new Error(`Not a directory: ${dirPath}`);
   }
   assertAllowedPath(root);
 
+  if (opts.extensions !== undefined) {
+    if (opts.extensions.length === 0) throw new Error("extensions must not be empty");
+    for (const e of opts.extensions) {
+      if (typeof e !== "string" || e.trim() === "") throw new Error(`Invalid extension: ${JSON.stringify(e)}`);
+    }
+  }
   const exts = opts.extensions?.map((e) => (e.startsWith(".") ? e : `.${e}`)) ?? [
     ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".py", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".html", ".css",
   ];
@@ -189,18 +242,24 @@ export async function ingestDirectory(
   };
   walk(root);
 
+  const sorted = files.sort();
   const ingested: IngestResult[] = [];
   const skipped: string[] = [];
-  for (let i = 0; i < files.sort().length; i++) {
-    const f = files[i];
+  let ingestedCount = 0;
+  let skippedCount = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const f = sorted[i];
     try {
-      ingested.push(await ingestFile(f, { metadata: opts.metadata ?? { ingestDir: root } }));
+      const res = await ingestFile(f, { metadata: opts.metadata ?? { ingestDir: root } });
+      ingestedCount++;
+      if (ingested.length < DIR_REPORT_LIMIT) ingested.push(res);
     } catch (e) {
-      skipped.push(`${f} (${(e as Error).message})`);
+      skippedCount++;
+      if (skipped.length < DIR_REPORT_LIMIT) skipped.push(`${f} (${(e as Error).message})`);
     }
     if (i % 10 === 9) await yieldLoop();
   }
-  return { ingested, skipped };
+  return { ingested, skipped, ingestedCount, skippedCount };
 }
 
 export async function searchDocs(query: string, topK = 10, minScore = 0.08, filters?: SearchChunkFilters): Promise<SearchHit[]> {
@@ -228,22 +287,50 @@ export async function retrieve(
   };
 }
 
-export function listDocuments(): Array<Record<string, unknown>> {
+/** Bounded by default: a big store would otherwise dump every row into one tool result. */
+export const LIST_DOCS_DEFAULT = 100;
+export const LIST_DOCS_MAX = 1000;
+
+export function listDocuments(opts: { limit?: number; offset?: number } = {}): {
+  documents: Array<Record<string, unknown>>;
+  total: number;
+  limit: number;
+  offset: number;
+} {
   const db = getDB();
+  const limit = Math.min(
+    Math.max(Math.trunc(opts.limit ?? LIST_DOCS_DEFAULT), 1),
+    LIST_DOCS_MAX
+  );
+  const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
+  const total = (db.prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
   const rows = db
     .prepare(
-      `SELECT id, title, source, content_type, chunk_count, created_at, updated_at, metadata FROM documents ORDER BY updated_at DESC`
+      `SELECT id, title, source, content_type, chunk_count, created_at, updated_at, metadata
+         FROM documents ORDER BY updated_at DESC LIMIT ? OFFSET ?`
     )
-    .all() as unknown as Array<Record<string, unknown>>;
-  return rows;
+    .all(limit, offset) as unknown as Array<Record<string, unknown>>;
+  return { documents: rows, total, limit, offset };
 }
 
 export function deleteDocument(docId: string): { deleted: boolean } {
   const db = getDB();
-  db.prepare("DELETE FROM chunks_fts WHERE rowid IN (SELECT rowid FROM chunks WHERE doc_id = ?)").run(docId);
-  const res = db.prepare("DELETE FROM documents WHERE id = ?").run(docId);
+  db.exec("BEGIN IMMEDIATE;");
+  let changes = 0;
+  try {
+    db.prepare("DELETE FROM chunks_fts WHERE rowid IN (SELECT rowid FROM chunks WHERE doc_id = ?)").run(docId);
+    changes = Number(db.prepare("DELETE FROM documents WHERE id = ?").run(docId).changes);
+    db.exec("COMMIT;");
+  } catch (e) {
+    try {
+      db.exec("ROLLBACK;");
+    } catch {
+      /* transaction already closed */
+    }
+    throw e;
+  }
   invalidateVectorCache();
-  return { deleted: Number(res.changes) > 0 };
+  return { deleted: changes > 0 };
 }
 
 export function documentStats(): { documents: number; chunks: number; tokens: number } {

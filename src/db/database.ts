@@ -27,8 +27,10 @@ export function getDB(): DatabaseSync {
   // Wait up to 5s for a concurrent writer (CLI + MCP server + auto-save plugin
   // all share the same store) instead of failing with SQLITE_BUSY immediately.
   db.exec("PRAGMA busy_timeout = 5000;");
-  _db = db;
+  // Migrate BEFORE caching the handle: a failed migration must surface and be
+  // retried on the next call, never leave a half-migrated connection cached.
   migrate(db);
+  _db = db;
   return db;
 }
 
@@ -38,6 +40,24 @@ function columnExists(db: DatabaseSync, table: string, column: string): boolean 
 }
 
 function migrate(db: DatabaseSync) {
+  // One IMMEDIATE transaction for the whole schema step: two processes opening
+  // the same fresh store (CLI + MCP server + plugin) must not race and end up
+  // with half-applied DDL or a "duplicate column" failure.
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    createSchema(db);
+    db.exec("COMMIT;");
+  } catch (e) {
+    try {
+      db.exec("ROLLBACK;");
+    } catch {
+      /* transaction already closed */
+    }
+    throw e;
+  }
+}
+
+function createSchema(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS documents (
       id           TEXT PRIMARY KEY,
@@ -60,6 +80,7 @@ function migrate(db: DatabaseSync) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS memories (
       id           TEXT PRIMARY KEY,
@@ -75,6 +96,7 @@ function migrate(db: DatabaseSync) {
     );
     CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
     CREATE INDEX IF NOT EXISTS idx_memories_prune ON memories(importance, recall_count, created_at);
+    CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS meta (
       key   TEXT PRIMARY KEY,
@@ -97,17 +119,22 @@ function migrate(db: DatabaseSync) {
   const ftsRow = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'")
     .get() as { sql?: string } | undefined;
-  if (!ftsRow) {
-    db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'trigram');");
-  } else if (!ftsRow.sql!.includes("trigram")) {
+  if (ftsRow) {
     // Existing store built with 'unicode61' — recreate with trigram and backfill.
-    db.exec("DROP TABLE chunks_fts;");
-    db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'trigram');");
-    db.exec(
-      `INSERT INTO chunks_fts(rowid, content)
-         SELECT rowid, content FROM chunks`
-    );
+    if (!ftsRow.sql!.includes("trigram")) rebuildFts(db);
+  } else {
+    // First run with this schema (or a store whose FTS table was dropped):
+    // create AND backfill, otherwise existing chunks silently lose keyword search
+    // forever — the next boot sees "trigram" and would skip the rebuild.
+    rebuildFts(db);
   }
+}
+
+/** Runs inside the migrate() transaction. */
+function rebuildFts(db: DatabaseSync): void {
+  db.exec("DROP TABLE IF EXISTS chunks_fts;");
+  db.exec("CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize = 'trigram');");
+  db.exec("INSERT INTO chunks_fts(rowid, content) SELECT rowid, content FROM chunks;");
 }
 
 /** SHA-256 hex of raw content — used for document dedup. */
@@ -119,14 +146,14 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Serialize a Float64Array embedding to a SQLite BLOB. */
+/** Serialize a Float64Array embedding to a SQLite BLOB (view-safe). */
 export function packVector(v: Float64Array): Uint8Array {
-  return new Uint8Array(v.buffer.slice(0));
+  return new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
 }
 
-/** Deserialize a BLOB back into a Float64Array. */
+/** Deserialize a BLOB back into a Float64Array. Returns null on absent/partial data. */
 export function unpackVector(blob: Uint8Array | null): Float64Array | null {
-  if (!blob || blob.byteLength === 0) return null;
+  if (!blob || blob.byteLength === 0 || blob.byteLength % 8 !== 0) return null;
   return new Float64Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
 }
 
@@ -137,17 +164,24 @@ export function nowMs(): number {
 export function closeDB() {
   _db?.close();
   _db = null;
+  cachedDim = null;
 }
 
 /* ------------------------------------------------------------------ */
 /* Embedding dimension metadata                                        */
 /* ------------------------------------------------------------------ */
 
+/** Cached embed_dim: locked on first write, so it is read once per process. */
+let cachedDim: number | null = null;
+
 export function getEmbedDim(): number {
-  const r = getDB().prepare("SELECT value FROM meta WHERE key = 'embed_dim'").get() as
-    | { value: string }
-    | undefined;
-  return r ? Number(r.value) : 0;
+  if (cachedDim === null) {
+    const r = getDB().prepare("SELECT value FROM meta WHERE key = 'embed_dim'").get() as
+      | { value: string }
+      | undefined;
+    cachedDim = r ? Number(r.value) : 0;
+  }
+  return cachedDim;
 }
 
 export function setEmbedMeta(dim: number, model: string) {
@@ -158,6 +192,7 @@ export function setEmbedMeta(dim: number, model: string) {
   db.prepare(
     "INSERT INTO meta(key, value) VALUES ('embed_model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(model);
+  cachedDim = dim;
 }
 
 /**

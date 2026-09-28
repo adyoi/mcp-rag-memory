@@ -31,16 +31,36 @@ export interface SyncResult {
 
 export type SessionSource = "opencode-db" | "session-log";
 
-/** Where opencode keeps its session/message history. Override via OPENCODE_DB. */
-export const OPENCODE_DB: string =
-  process.env.OPENCODE_DB ?? path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
-
-/** Desktop/local-mode db (per-project sessions) used as a fallback source. */
-export const OPENCODE_DB_LOCAL: string =
-  process.env.OPENCODE_DB_LOCAL ?? path.join(os.homedir(), ".local", "share", "opencode", "opencode-local.db");
-
+/**
+ * Where opencode keeps its session/message history, in probe order.
+ * Read on every call (not frozen at import) so OPENCODE_DB can be pointed at a
+ * different store — or a fixture — at any time. Opencode uses the POSIX XDG
+ * path on Linux/macOS and %LOCALAPPDATA% on Windows.
+ */
 export function opencodeDbs(): string[] {
-  return [OPENCODE_DB, OPENCODE_DB_LOCAL].filter((p) => fs.existsSync(p));
+  const home = os.homedir();
+  const candidates = [
+    process.env.OPENCODE_DB,
+    process.env.OPENCODE_DB_LOCAL,
+    path.join(home, ".local", "share", "opencode", "opencode.db"),
+    path.join(home, ".local", "share", "opencode", "opencode-local.db"),
+    process.platform === "win32"
+      ? path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "opencode", "opencode.db")
+      : undefined,
+    process.platform === "win32"
+      ? path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "opencode", "opencode-local.db")
+      : undefined,
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of candidates) {
+    if (!p) continue;
+    const abs = path.resolve(p);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    if (fs.existsSync(abs)) out.push(abs);
+  }
+  return out;
 }
 
 function normalizeDir(d: string): string {
@@ -87,8 +107,16 @@ function assertOpencodeSchema(db: DatabaseSync, table: string, required: string[
   }
 }
 
-function querySessions(dbPath: string, limit: number): SessionRow[] {
+function openReadonly(dbPath: string): DatabaseSync {
   const db = new DatabaseSync(dbPath, { readOnly: true });
+  // opencode writes to this DB continuously; without a busy timeout a read taken
+  // during a write lock fails instantly with SQLITE_BUSY.
+  db.exec("PRAGMA busy_timeout = 5000;");
+  return db;
+}
+
+function querySessions(dbPath: string, limit: number): SessionRow[] {
+  const db = openReadonly(dbPath);
   try {
     assertOpencodeSchema(db, "session", ["id", "directory", "time_updated"]);
     const cols = tableColumns(db, "session");
@@ -149,46 +177,78 @@ export async function ingestLatest(
   return { found: true, sessionId: hit.id, entries: res.entries, messages: res.messages, newDocs: res.newDocs, deduplicated: res.deduplicated, skipped: res.skipped };
 }
 
+/** Hard cap on user messages read from one session (a whole session can be huge). */
+const DEFAULT_MAX_MESSAGES = 500;
+
+function maxMessages(): number {
+  const raw = Number(process.env.RAG_SESSION_MAX_MSGS);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_MAX_MESSAGES;
+}
+
 /** Extract user-typed text from one session, oldest first. Searches the global
  * and local opencode DBs (a session may live in either, depending on mode). */
 export function getSessionTranscript(sessionId: string, limit = 0): SessionEntry[] {
   const dbs = opencodeDbs();
-  if (dbs.length === 0) throw new Error(`opencode DB not found: ${OPENCODE_DB}`);
-  let last: SessionEntry[] = [];
+  if (dbs.length === 0) {
+    throw new Error(
+      "opencode DB not found. Set OPENCODE_DB (and/or OPENCODE_DB_LOCAL) to the path of " +
+        "opencode's opencode.db, or use 'ingest-dir' / 'ingest-text' instead."
+    );
+  }
   for (const dbPath of dbs) {
     const entries = transcriptFromDb(dbPath, sessionId, limit);
     if (entries.length > 0) return entries;
-    last = entries;
   }
-  return last;
+  // Nothing anywhere: distinguish "unknown session" from "no user messages".
+  for (const dbPath of dbs) {
+    if (sessionExists(dbPath, sessionId)) {
+      throw new Error(`Session ${sessionId} has no user messages to ingest.`);
+    }
+  }
+  throw new Error(`Session ${sessionId} not found in any opencode DB (${dbs.join(", ")}).`);
+}
+
+function sessionExists(dbPath: string, sessionId: string): boolean {
+  const db = openReadonly(dbPath);
+  try {
+    const row = db.prepare("SELECT 1 AS ok FROM session WHERE id = ?").get(sessionId) as
+      | { ok: number }
+      | undefined;
+    return row !== undefined;
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
 }
 
 function transcriptFromDb(dbPath: string, sessionId: string, limit: number): SessionEntry[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = openReadonly(dbPath);
   const entries: SessionEntry[] = [];
   try {
     assertOpencodeSchema(db, "message", ["id", "session_id", "time_created", "data"]);
     assertOpencodeSchema(db, "part", ["message_id", "data"]);
+    const cap = limit > 0 ? limit : maxMessages();
     const msgs = db
       .prepare(
         `SELECT id, time_created, data FROM message
           WHERE session_id = ? AND json_extract(data, '$.role') = 'user'
-          ORDER BY time_created ASC`
+          ORDER BY time_created ASC
+          LIMIT ?`
       )
-      .all(sessionId) as Array<{ id: string; time_created: number; data: string }>;
-    const partsStatement = db.prepare("SELECT data FROM part WHERE message_id = ?");
+      .all(sessionId, cap) as Array<{ id: string; time_created: number; data: string }>;
+    // Pull only text parts in SQL — a session holds multi-MB image/tool blobs and
+    // parsing every one of them just to throw it away was the memory spike.
+    const partsStatement = db.prepare(
+      `SELECT json_extract(data, '$.text') AS text FROM part
+        WHERE message_id = ? AND json_extract(data, '$.type') = 'text'`
+    );
 
     for (const m of msgs) {
       if (limit > 0 && entries.length >= limit) break;
-      const parts = partsStatement.all(m.id) as Array<{ data: string }>;
       const texts: string[] = [];
-      for (const p of parts) {
-        try {
-          const d = JSON.parse(p.data) as { type?: string; text?: string };
-          if (d.type === "text" && d.text) texts.push(String(d.text));
-        } catch {
-          /* unparseable part — skip */
-        }
+      for (const p of partsStatement.all(m.id) as Array<{ text: string | null }>) {
+        if (typeof p.text === "string" && p.text.trim()) texts.push(p.text);
       }
       if (texts.length > 0) entries.push({ sessionId, ts: m.time_created, content: texts.join("\n") });
     }
@@ -312,10 +372,14 @@ export async function ingestEntries(entries: SessionEntry[], source: SessionSour
       continue;
     }
     const content = condenseInput(original);
+    // Scope the dedup hash to (source, session, ts): without it, the same short
+    // message ("ok", "continue") typed in two sessions collapsed into one
+    // document and the second session silently disappeared from the store.
     const res = await ingestText(content, `${e.sessionId.slice(-12)}-${e.ts}`, {
       source,
       contentType: "text",
       metadata: { source, session_id: e.sessionId, ts: e.ts, condensed: content !== original },
+      dedupScope: `${source}:${e.sessionId}:${e.ts}`,
     });
     if (res.deduplicated) deduplicated++;
     else newDocs++;

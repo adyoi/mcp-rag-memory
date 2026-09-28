@@ -5,9 +5,36 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 ## [Unreleased]
 
 ### Added
-- **`setup-opencode` config re-assert scripts** — `scripts/setup-opencode.ps1` (Windows PowerShell) and `scripts/setup-opencode.sh` (bash; picks `jq` → `python3` → fallback), dispatched by `scripts/setup-opencode.mjs` via `npm run setup-opencode`. Rewrites the global opencode config (`opencode.json` + `opencode.jsonc`) after an opencode update wipes it: merges with existing files without clobbering user keys, unions `instructions`/`plugin` arrays, backs up broken files to `.bak-<ts>`, stays idempotent, and `--check` reports drift (exit 0 = up to date). Docs in README + AGENTS.md.
+- **`setup-opencode` config re-assert scripts** — `scripts/setup-opencode.ps1` (Windows PowerShell) and `scripts/setup-opencode.sh` (bash; picks `jq` → `python3` → fallback), dispatched by `scripts/setup-opencode.mjs` via `npm run setup-opencode`. Rewrites the global opencode config (`opencode.json` + `opencode.jsonc`) after an opencode update wipes it: merges with existing files without clobbering user keys, unions `instructions`/`plugin` arrays, backs up broken files to `.bak-<ts>`, stays idempotent, and `--check` reports drift (exit 0 = up to date). Both scripts also force the canonical `mcp.rag-memory` entry so a half-written or renamed server entry can't survive an update. Docs in README + AGENTS.md.
+- **`LICENSE`** (MIT, matching `package.json`) and **`npm run typecheck`** (`tsconfig.check.json` covering `src/`, `scripts/`, `.opencode/plugin/` — the build config only sees `src/`).
+- **CI matrix** now runs Windows as well as Linux, and gates on the standalone type-check before the build.
+- **Test suite 116 → 158 assertions** (FTS backfill, FTS metacharacters, trigram substring search, `min_score` filtering, cross-connection cache invalidation, `dedupScope`, consolidate false-positive guard, chunker overlap/clamp guards, late `OPENCODE_DB`, env allowlist, corrupted `tags` rows, and a real `clean-all --force` run over 100+ documents).
+
+### Changed
+- **`rag_list_documents` is paginated** — returns `{ documents, total, limit, offset }` with `limit` clamped to 1–1000 instead of dumping every document into the tool response. CLI `docs` gained `--limit`/`--offset`.
+- **`memory_consolidate` no longer re-embeds** — the promotion pass is a single `UPDATE` instead of a per-memory re-embed (a full model inference each), and it now sees the whole store rather than the newest 100 entries. Reports a `skippedDedup` flag when the store is too large for the O(n²) pass.
+- **Deduplication is strictly safer**: only *exact* duplicates dedupe by content hash, and `consolidate` additionally requires ≥ 80% word overlap before deleting a near-duplicate — templated agent memories ("the user's X is Y") sit at ~0.95 cosine but say different things, and deleting those is unrecoverable.
+- **Node engine** is now `>=22.12.0` (the first release with `node:sqlite` read-only + `busy_timeout` behaviour this server relies on).
+- **`.env` loading is restricted** to this server's own variables (`RAG_*`, `OPENCODE_*`, `EMBEDDING_*`, `SEARCH_MODE`); other keys are ignored with a stderr warning so a repository `.env` cannot inject arbitrary environment variables into the host session.
 
 ### Fixed
+- **Concurrent ingestion no longer corrupts the store** — embedding happens *before* the write transaction opens. The MCP SDK does not serialise tool calls, and awaiting a model inference inside an open `BEGIN` let another request's writes be folded into — or rolled back with — the first one's transaction.
+- **`chunks_fts` is backfilled on creation** — a store that had the FTS table dropped (or created by a failed migration) silently lost keyword search for every pre-existing chunk forever, because the next boot saw "trigram" and skipped the rebuild.
+- **FTS5 queries are escaped** — a query containing `"`, `*`, `(`, `OR` or `NEAR` used to throw `fts5: syntax error`; tokens are now quoted before `MATCH`.
+- **Vector cache notices other writers** — the in-process cache is keyed on `PRAGMA data_version`, so a document written by the CLI, the session-logger plugin or a second MCP server is visible without restarting this one.
+- **`min_score` actually filters** — the threshold is applied to the final fused score, and scores are clamped to `0..1`.
+- **Session sync no longer collapses messages across sessions** — dedup is scoped to `(source, session, ts)`, so the same short reply ("ok", "continue") in two sessions is two documents instead of one. Re-running a sync stays idempotent.
+- **Session DB discovery is read per call**, includes the Windows `%LOCALAPPDATA%` location, uses `LIMIT` + SQL-side text filtering instead of loading every part blob, opens read-only handles with a busy timeout, and reports a missing session instead of silently returning nothing.
+- **Chunker**: `overlapChars: 0` no longer duplicates the previous chunk (`slice(-0)` returns the whole string); a pending window is flushed before hard-splitting an oversized sentence, which used to emit earlier text twice; fenced code blocks are kept intact; `maxChars`/`overlapChars` are validated.
+- **Vector blobs** are copied by byte range instead of sharing the underlying `ArrayBuffer` (a pooled Node buffer could corrupt stored vectors), and a partial/foreign blob is rejected instead of read past its end.
+- **`memory_recall`/`memory_list`** no longer issue one query per row, and recall counts are only bumped for the memories actually returned.
+- **`memory_update`** no longer re-embeds on a metadata-only change, and an all-undefined patch is a no-op instead of a silent re-embed.
+- **`memory_consolidate` prune env vars** are range-validated instead of accepting `NaN`.
+- **CLI** parses `--key=value`, treats bare flags as booleans (so `--content true` no longer stores the literal word "true"), validates required arguments, and returns a non-zero exit code on failure.
+- **`clean-all` wipes the whole store** — the old list-then-delete loop stopped after 100 documents/memories; it is now one transaction per table and verifies the result.
+- **The session-logger plugin** spawns with `shell: false` (no shell re-parsing of the workspace path, no command injection), resolves `npx.cmd` on Windows, and swallows async spawn errors instead of emitting an unhandled `error` event.
+- **`SEARCH_MODE`** is read per call, so changing it at runtime (as the tests do) takes effect.
+- **Search filters are validated and clamped** — the MCP schema rejects an out-of-range `limit` instead of passing it to SQL.
 - **Search filters now pre-rank** — `doc_id`/`source` are resolved against the DB before scoring, so a filtered document can never be squeezed out of the top-K by unfiltered chunks. Vector and FTS legs both restrict to the allowed chunk set.
 - **`ingestText` is atomic** — a failed embed/chunk write rolls the whole document back (BEGIN/COMMIT/ROLLBACK) instead of leaving a partial doc.
 - **`ingestText` rejects empty content** with a clear error.

@@ -9,8 +9,9 @@
  * `mcp-rag-memory` package as `mcp-rag-memory-cli`.
  *
  * The raw transcript stays in opencode's DB as-is; curated long-term memories are
- * not affected. Re-runs are idempotent thanks to content-hash dedup. Never blocks
- * the chat — all errors are swallowed. Disable with env RAG_AUTOSYNC=0.
+ * not affected. Re-runs are idempotent: every user message is deduped by
+ * (source, session, ts), so a repeat sync is a no-op. Never blocks the chat —
+ * all errors are swallowed. Disable with env RAG_AUTOSYNC=0.
  */
 const MIN_INTERVAL_MS = 60_000;
 import { spawn } from "node:child_process";
@@ -26,7 +27,7 @@ export const SessionLoggerPlugin = async ({ directory }: { directory?: string })
     if (now - lastRun < MIN_INTERVAL_MS) return;
     lastRun = now;
     try {
-      spawnCli(["npx", "--yes", "-p", "mcp-rag-memory", "mcp-rag-memory-cli", "sync-latest", "--dir", workspace]);
+      spawnCli(workspace);
     } catch {
       /* never break the chat over logging */
     }
@@ -46,6 +47,21 @@ export const SessionLoggerPlugin = async ({ directory }: { directory?: string })
   };
 };
 
-function spawnCli(cmd: string[]): void {
-  spawn(cmd[0], cmd.slice(1), { shell: true, stdio: "ignore" });
+/**
+ * shell:false is deliberate — with shell:true a workspace path containing
+ * spaces or quotes is re-parsed by the shell, and the path is command
+ * injection. On Windows the npx shim is npx.cmd, so resolve that explicitly.
+ */
+function spawnCli(workspace: string): void {
+  const isWindows = process.platform === "win32";
+  const child = spawn(
+    isWindows ? "npx.cmd" : "npx",
+    ["--yes", "-p", "mcp-rag-memory", "mcp-rag-memory-cli", "sync-latest", "--dir", workspace],
+    { shell: false, stdio: "ignore", windowsHide: true, detached: !isWindows }
+  );
+  // An async spawn error (npx missing, ENOENT) is emitted on the child, not
+  // thrown; without a listener it is an unhandled 'error' event that can take
+  // the host process down.
+  child.on("error", () => {});
+  child.unref();
 }

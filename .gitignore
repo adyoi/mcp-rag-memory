@@ -12,3 +12,7 @@ plugin-log.txt
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.tsbuildinfo

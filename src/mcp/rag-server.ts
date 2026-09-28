@@ -32,6 +32,7 @@ import {
   contextPrompt,
   MEMORY_TYPES,
 } from "../memory/memory.js";
+import type { MemoryType } from "../memory/memory.js";
 
 const require = createRequire(import.meta.url);
 const serverVersion = require("../../package.json").version as string;
@@ -96,9 +97,9 @@ server.registerTool(
 server.registerTool(
   "rag_ingest_file",
   {
-    description: "Read a file and store it as a knowledge document",
+    description: "Read a file and store it as a knowledge document. Honours RAG_ALLOWED_DIRS when set.",
     inputSchema: {
-      path: z.string().describe("Absolute path to the file"),
+      path: z.string().min(1).describe("Absolute path to the file"),
       metadata: z.record(z.string(), z.unknown()).optional(),
     },
   },
@@ -113,9 +114,9 @@ server.registerTool(
   {
     description: "Recursively ingest supported source files from a directory",
     inputSchema: {
-      path: z.string().describe("Absolute path to the directory"),
+      path: z.string().min(1).describe("Absolute path to the directory"),
       recursive: z.boolean().optional().default(true),
-      extensions: z.array(z.string()).optional().describe("File extensions to include, e.g. ['.ts', '.md']"),
+      extensions: z.array(z.string().min(1)).min(1).optional().describe("File extensions to include, e.g. ['.ts', '.md']"),
     },
   },
   async (args: { path: string; recursive?: boolean; extensions?: string[] }) => {
@@ -191,11 +192,14 @@ server.registerTool(
 server.registerTool(
   "rag_list_documents",
   {
-    description: "List all stored knowledge documents",
-    inputSchema: {},
+    description: "List stored knowledge documents (newest first, paginated)",
+    inputSchema: {
+      limit: z.number().int().min(1).max(1000).optional().default(100).describe("Max documents to return"),
+      offset: z.number().int().min(0).optional().default(0).describe("Skip this many documents"),
+    },
   },
-  async () => {
-    const docs = listDocuments();
+  async (args: { limit?: number; offset?: number }) => {
+    const docs = listDocuments({ limit: args.limit, offset: args.offset });
     return { content: [{ type: "text", text: JSON.stringify(docs, null, 2) }] };
   }
 );
@@ -235,15 +239,15 @@ server.registerTool(
     description:
       "Ingest an opencode session's user inputs (or the latest active session) into the RAG store as searchable documents. Use with the session id from opencode, or omit session_id and pass directory to auto-pick the most recent session in that workspace.",
     inputSchema: {
-      session_id: z.string().optional().describe("opencode session id; omit to use the latest active session"),
-      directory: z.string().optional().describe("Workspace path used to pick the latest session when session_id is omitted"),
-      limit: z.number().int().min(1).optional().describe("Only ingest the first N user messages"),
+      session_id: z.string().min(1).optional().describe("opencode session id; omit to use the latest active session"),
+      directory: z.string().min(1).optional().describe("Workspace path used to pick the latest session when session_id is omitted (defaults to the server's working directory)"),
+      limit: z.number().int().min(1).max(2000).optional().describe("Only ingest the first N user messages"),
     },
   },
   async (args: { session_id?: string; directory?: string; limit?: number }) => {
     const res = args.session_id
       ? await syncSession(args.session_id, { limit: args.limit })
-      : await syncLatest({ limit: args.limit, directory: args.directory });
+      : await syncLatest({ limit: args.limit, directory: args.directory ?? process.cwd() });
     return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
   }
 );
@@ -260,10 +264,10 @@ server.registerTool(
       tags: z.array(z.string()).optional().describe("Tags for filtering"),
     },
   },
-  async (args: { content: string; type?: string; importance?: number; tags?: string[] }) => {
+  async (args: { content: string; type?: MemoryType; importance?: number; tags?: string[] }) => {
     const rec = await remember({
       content: args.content,
-      type: args.type as never,
+      type: args.type,
       importance: args.importance,
       tags: args.tags,
     });
@@ -298,9 +302,9 @@ server.registerTool(
       limit: z.number().int().min(1).max(500).optional().default(100),
     },
   },
-  async (args: { type?: string; tag?: string; min_importance?: number; limit?: number }) => {
+  async (args: { type?: MemoryType; tag?: string; min_importance?: number; limit?: number }) => {
     const recs = listMemories({
-      type: args.type as never,
+      type: args.type,
       tag: args.tag,
       minImportance: args.min_importance,
       limit: args.limit,
@@ -336,10 +340,15 @@ server.registerTool(
       tags: z.array(z.string()).optional(),
     },
   },
-  async (args: { id: string; content?: string; type?: string; importance?: number; tags?: string[] }) => {
+  async (args: { id: string; content?: string; type?: MemoryType; importance?: number; tags?: string[] }) => {
+    // An all-undefined patch used to re-embed the text and bump updated_at,
+    // silently reordering the store.
+    if (args.content === undefined && args.type === undefined && args.importance === undefined && args.tags === undefined) {
+      return { content: [{ type: "text", text: "Nothing to update: provide content, type, importance and/or tags." }] };
+    }
     const rec = await updateMemory(args.id, {
       content: args.content,
-      type: args.type as never,
+      type: args.type,
       importance: args.importance,
       tags: args.tags,
     });
