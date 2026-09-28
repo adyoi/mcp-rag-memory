@@ -4,6 +4,8 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-28
+
 ### Added
 - **`setup-opencode` config re-assert scripts** — `scripts/setup-opencode.ps1` (Windows PowerShell) and `scripts/setup-opencode.sh` (bash; picks `jq` → `python3` → fallback), dispatched by `scripts/setup-opencode.mjs` via `npm run setup-opencode`. Rewrites the global opencode config (`opencode.json` + `opencode.jsonc`) after an opencode update wipes it: merges with existing files without clobbering user keys, unions `instructions`/`plugin` arrays, backs up broken files to `.bak-<ts>`, stays idempotent, and `--check` reports drift (exit 0 = up to date). Both scripts also force the canonical `mcp.rag-memory` entry so a half-written or renamed server entry can't survive an update. Docs in README + AGENTS.md.
 - **`LICENSE`** (MIT, matching `package.json`) and **`npm run typecheck`** (`tsconfig.check.json` covering `src/`, `scripts/`, `.opencode/plugin/` — the build config only sees `src/`).
