@@ -305,6 +305,10 @@ async function main() {
   // Optional prune — only runs when RAG_PRUNE=1 (deletes are irreversible).
   await mem.remember({ content: "Obsolete scratch note xy.", type: "fact", importance: 0.1 });
   check("prune candidate exists", mem.listMemories().length === 4);
+  // Back-date the candidate: AGE_DAYS=0 combined with a fresh created_at depends
+  // on the clock advancing between the write and the prune, which is not
+  // guaranteed on a fast runner.
+  db.prepare("UPDATE memories SET created_at = ? WHERE content = ?").run(Date.now() - 60_000, "Obsolete scratch note xy.");
   process.env.RAG_PRUNE = "1";
   process.env.RAG_PRUNE_IMPORTANCE = "0.5";
   process.env.RAG_PRUNE_AGE_DAYS = "0";
@@ -313,6 +317,12 @@ async function main() {
   check("prune leaves other memories", mem.listMemories().length === 3);
   const afterPrune = mem.listMemories();
   check("prune keeps alpha memory", afterPrune.some((m) => m.content.includes("Bazel")));
+  check("prune keeps a never-recalled memory above the threshold", afterPrune.some((m) => m.content.includes("Bazel") && m.recallCount === 0), JSON.stringify(afterPrune.map((m) => [m.content.slice(0, 20), m.recallCount])));
+  // A recalled low-importance memory must survive: recall_count = 0 is a guard.
+  await mem.remember({ content: "Low value but frequently needed fact qqq.", type: "fact", importance: 0.1 });
+  db.prepare("UPDATE memories SET recall_count = 5, created_at = ? WHERE content = ?").run(Date.now() - 60_000, "Low value but frequently needed fact qqq.");
+  const pruneAgain = await mem.consolidate();
+  check("prune never deletes a recalled memory", pruneAgain.pruned === 0, JSON.stringify(pruneAgain));
   delete process.env.RAG_PRUNE;
   delete process.env.RAG_PRUNE_IMPORTANCE;
   delete process.env.RAG_PRUNE_AGE_DAYS;

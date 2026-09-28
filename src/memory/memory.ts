@@ -316,7 +316,10 @@ export async function consolidate(): Promise<ConsolidationReport> {
     const maxAgeDays = numEnv("RAG_PRUNE_AGE_DAYS", 90, (n) => n >= 0);
     const cutoff = nowMs() - maxAgeDays * 86_400_000;
     const stale = db
-      .prepare("SELECT id FROM memories WHERE importance < ? AND recall_count = 0 AND created_at < ?")
+      // <= so RAG_PRUNE_AGE_DAYS=0 means "everything is stale"; a strict <
+      // skipped rows created in the same millisecond as the cutoff, which made
+      // the prune silently no-op on a fast machine.
+      .prepare("SELECT id FROM memories WHERE importance < ? AND recall_count = 0 AND created_at <= ?")
       .all(minImp, cutoff) as Array<{ id: string }>;
     for (const s of stale) {
       delStmt.run(s.id);

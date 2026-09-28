@@ -27,7 +27,7 @@ Requires **Node.js ≥ 22.12** (for `node:sqlite` read-only handles and
 
 ```bash
 npm install
-npm test                 # 158 checks: unit + MCP round-trip via SDK client
+npm test                 # 160 checks: unit + MCP round-trip via SDK client
 npm run lint             # oxlint
 npm run typecheck        # src + scripts + .opencode/plugin
 npm run build            # compile to dist/
