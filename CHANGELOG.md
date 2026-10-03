@@ -4,6 +4,30 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-03
+
+> **Upgrade note.** No action required. Searches, ingests and recalls now fail
+> with an explicit message while `rag_reindex` is running (the store is flagged
+> mid-migration) — previously that state did not exist. `rag_search` gained an
+> opt-in `explain` parameter, `system_stats` gained `embedding.vectorLeg`,
+> `embedding.note` and `storeState`, and every tool input is now length-bounded.
+> Two new env knobs (`RAG_DEDUP_MAX_VECTORS`, `RAG_VECTOR_CACHE_WARN_MB`) both
+> default to the previous hardcoded behaviour.
+
+### Added
+- **`rag_reindex` — migrate the store to a new embedding model in place.** Changing `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL` previously only produced an error telling you to point `RAG_DB_DIR` at a fresh directory and re-ingest everything, which for a memory store holding months of history is a rebuild rather than a migration. `reindex` (MCP tool and CLI command) re-embeds every chunk and memory in batches, committing per batch, then rewrites `embed_dim`/`embed_model`. Embedding is deterministic per model, so it is idempotent and safe to re-run after an interruption.
+- **A half-migrated store can no longer return confident nonsense.** A store mid-`reindex` carries `embed_state='reindexing'`, and `ensureDim` — the chokepoint every search, recall and ingest already passes through — refuses to run while it is set. `system_stats` reports `storeState` plus a `remediation` hint. Without this, a partial migration mixes two vector spaces and the only symptom is bad results.
+- **Search explainability.** `rag_search(explain=true)` and `cli search --explain` attach per-leg diagnostics to every hit: cosine similarity, BM25 normalised against the best hit, the RRF contribution that decided the order, and each leg's rank. Every hit also reports `legs` (which legs surfaced it) by default. Previously the keyword leg was only observable as a rank-decayed 0..1 number, so a bad ranking could not be distinguished from a weak match.
+- **Honest labelling of what the vector leg measures.** `system_stats` now reports `embedding.vectorLeg` (`lexical` for the default local hashing embedder, `semantic` for `transformers`) with a `note` explaining the consequence. The default embedder scores lexical and sub-word overlap, not meaning, so paraphrase-only queries depend on the FTS trigram leg; calling that "semantic" led agents to trust recall that was never there.
+- **`RAG_DEDUP_MAX_VECTORS`** (default `500`, the previous hardcoded ceiling) and **`RAG_VECTOR_CACHE_WARN_MB`** (default `256`).
+- **Vector cache size warning.** The cache is deliberately uncapped and complete — truncating it would silently change which documents are findable — so the server warns on stderr once the resident vectors approach the threshold instead of letting the process die without a diagnostic.
+- **Test suite 168 -> 211 assertions**, covering per-leg explain output, the mid-reindex guard across search/recall/ingest, `reindex` correctness, idempotence and progress reporting, the configurable dedup ceiling, the cache warning, corrupt-opencode-DB isolation, and the new tool input caps (verified to be rejected at the schema boundary over MCP).
+
+### Fixed
+- **A single unusable opencode DB no longer aborts the whole session sync.** The candidate probe loop had no per-DB guard, so a stale or corrupt `opencode.db` anywhere in the search order threw a raw SQLite error and hid a perfectly healthy database holding the session. Candidates are now probed independently and failures are aggregated; the error only surfaces when every candidate failed, and it names them instead of leaking `file is not a database`.
+- **Tool inputs are length-bounded.** 27 tool parameters were unbounded `z.string().min(1)`, so a single call could push a megabyte of text into the synchronous chunker and embedder and stall the whole stdio server, or pass a path long enough to be a denial of service. Caps sit well above realistic input (2 000-char queries, 20 000-char memories, 64 tags, 4 096-char paths).
+- **The server now closes the database on shutdown.** `SIGINT`/`SIGTERM`/`SIGHUP` rolled back on exit without closing the handle, skipping any WAL checkpoint and leaving the journal file behind. Exit is forced after a 2 s grace period, because a server that refuses to die is worse than one that drops an unflushed log line.
+
 ## [2.6.0] - 2026-10-02
 
 > **Upgrade note.** Two new guards can reject work that previously succeeded on an

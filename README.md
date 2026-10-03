@@ -18,7 +18,7 @@ context **across sessions**.
 - **Context Management** — `remember` facts/decisions/preferences, `recall` them later (score-decayed by staleness), rate by importance, consolidate duplicates, filter by type/tag.
 - **Zero external APIs by default** — local hashing-embedder (1024-dim), built-in `node:sqlite`. Works fully offline. Optional `EMBEDDING_PROVIDER=transformers` for a higher-quality ONNX model.
 - **Safe ingestion** — content-hash deduplication, file size guard (`RAG_MAX_FILE_MB`) and an opt-in path allowlist (`RAG_ALLOWED_DIRS`).
-- **MCP server** — runs on stdio, 19 tools.
+- **MCP server** — runs on stdio, 20 tools.
 
 ## Quick start
 
@@ -190,15 +190,16 @@ the global config to apply to every project.
 
 Restart opencode after any config change.
 
-## MCP tools (19)
+## MCP tools (20)
 
 | Group | Tool | Purpose |
 |-------|------|---------|
-| System | `system_stats` | DB dir, embedding backend, doc/memory counts |
+| System | `system_stats` | DB dir, embedding backend (incl. what the vector leg measures), store state, doc/memory counts |
+| Maintenance | `rag_reindex` | Re-embed every stored vector for the current model, migrating the store in place |
 | RAG ingest | `rag_ingest_text` | Store text as a knowledge document (dedup-aware) |
 | | `rag_ingest_file` | Store a file (`content_type` auto-detected) |
 | | `rag_ingest_dir` | Recursively ingest source files |
-| RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores |
+| RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores; `explain: true` adds per-leg scores |
 | | `rag_retrieve` | Ready-to-inject context block with token count |
 | RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory (`rag_list_documents` is paginated: `limit` 1–1000, `offset`) |
 | | `rag_delete_document` | Remove a document + chunks + FTS rows |
@@ -269,9 +270,45 @@ first winning: the MCP client's `env` block → your shell environment → a
 `.env` and edit, or point at any file via `RAG_ENV_FILE`. The store defaults to
 `.rag-data/` in the working directory.
 
+## Changing the embedding model
+
+The store refuses to mix vector spaces: if `EMBEDDING_MODEL` changes, searching
+with new vectors against old ones would silently blend two spaces and return
+noise. `ensureDim` catches the mismatch and tells you to point `RAG_DB_DIR` at a
+fresh directory and re-ingest — correct, but for a memory store holding months of
+history that is a manual rebuild rather than a migration.
+
+`reindex` does the migration in place. It re-embeds every chunk and memory for the
+currently configured provider/model, then rewrites the store metadata.
+
+```bash
+# 1. install the optional provider
+npm i @huggingface/transformers
+
+# 2. migrate the existing store (documents' text is the source of truth)
+EMBEDDING_PROVIDER=transformers \
+EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2 \
+npm run cli -- reindex --batch 32
+
+# 3. bake the provider into .env so the server uses it from now on
+```
+
+Or over MCP: the `rag_reindex` tool takes the same `batch_size`.
+
+**How interruption behaves.** A half-migrated store mixes old and new vectors, so
+`reindex` marks the store `reindexing` for its whole duration and every search,
+recall and ingest refuses to run while that flag is set. This is deliberate: the
+failure mode of a partial migration is confident nonsense, and nothing about the
+results would reveal it. If the process dies mid-run, just run `reindex` again —
+the whole store is rewritten from text, so resuming is identical to starting over.
+`system_stats` reports `storeState` and the remediation if you hit this.
+
+Re-running is always safe: embedding is deterministic per model, so `reindex` is
+idempotent. On an empty store it is a no-op that just records the model.
+
 ## Custom slash commands
 
-The 19 MCP tools are called by the AI automatically — but you can also
+The 20 MCP tools are called by the AI automatically — but you can also
 trigger them directly with custom commands. Sources (same name, project
 wins):
 
@@ -298,11 +335,13 @@ npm run cli -- recall "deployment schedule"
 npm run cli -- ingest-dir ./src/rag
 npm run cli -- search "vector similarity"
 npm run cli -- search "auth bug" --source opencode-db   # filter by source or doc-id
+npm run cli -- search "auth bug" --explain              # per-leg vector/keyword/RRF scores
 npm run cli -- docs --limit 20 --offset 20            # paginated inventory
 npm run cli -- mem-context "database"
 npm run cli -- sessions              # list recent opencode sessions
 npm run cli -- sync-session ses_123  # ingest one session's inputs
 npm run cli -- sync-latest           # ingest the most recent session
+npm run cli -- reindex --batch 32    # re-embed all vectors for the current model
 npm run clean-db -- --force          # wipe ALL documents + memories (destructive)
 ```
 
@@ -359,14 +398,74 @@ The plugin needs an opencode restart to take effect.
 ## Performance & limits
 
 - **Search is brute-force cosine / FTS5 over every chunk**: `O(N)` per query
-  (exact, deterministic — good for a personal store of thousands of chunks).
-  ANN / HNSW indexing is planned scope (v3) for 100k+ chunks.
+    (exact, deterministic — good for a personal store of thousands of chunks).
+    ANN / HNSW indexing is planned scope (v3) for 100k+ chunks.
+- **The vector cache holds every vector in RAM**, uncapped and complete. Truncating
+    it would silently change which documents are findable, so the cache stays whole
+    and the server warns instead: 8 KB per row at the default 1024 dims, so 100k
+    chunks is roughly 800 MB. Tune the warning threshold with
+    `RAG_VECTOR_CACHE_WARN_MB` (default 256). Beyond a few hundred thousand chunks,
+    expect to prune rather than scale.
 - Keyword leg uses the FTS5 **trigram** tokenizer, so CJK text and
   Indonesian-style substring/inflection matching work without extra config.
   Consequence: keyword terms of **≤ 2 characters are skipped** (trigram needs
   3); the vector leg still covers them.
 - Vector embeddings are local hash-based (no external APIs, ~0 cost, offline).
-  They are tuned for short-phrase similarity, not full-document semantics.
+    They are tuned for short-phrase similarity, not full-document semantics.
+
+### What the vector leg actually measures
+
+This matters more than it sounds, so the server states it explicitly in
+`system_stats` (`embedding.vectorLeg`) rather than calling everything "semantic".
+
+| Provider | `vectorLeg` | Meaning |
+|---|---|---|
+| `local` (default) | `lexical` | Hashes character 1/2/3-grams into 1024 buckets. Scores **lexical and sub-word overlap**, not meaning. |
+| `transformers` | `semantic` | Real sentence embeddings from `EMBEDDING_MODEL`. Captures meaning. |
+
+Consequence for the default: `"cara fix login"` and `"masalah autentikasi"`
+share almost no n-grams, so the **vector** leg scores near zero even though they
+mean the same thing. Retrieval still works because the **FTS5 trigram** leg
+carries the query, and because the local embedder does respond to shared substrings
+and character shapes. What you should not expect from the default is
+paraphrase-level recall — restating a concept with different vocabulary is the
+known blind spot.
+
+To get true semantic recall, install the optional dependency and migrate in place:
+
+```bash
+npm i @huggingface/transformers
+EMBEDDING_PROVIDER=transformers EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2 npm run cli -- reindex
+```
+
+`reindex` rewrites every stored vector for the new model. See
+[Changing the embedding model](#changing-the-embedding-model).
+
+### Debugging a bad search
+
+`rag_search` accepts `explain: true` (CLI: `--explain`), which attaches the
+per-leg diagnostics to every hit:
+
+```jsonc
+{
+  "score": 0.71,          // final relevance, 0..1 — what min_score filters on
+  "legs": ["vector", "keyword"],
+  "explain": {
+    "vectorScore": 0.63,  // cosine similarity, -1..1
+    "keywordScore": 1.0,  // BM25 normalised against the best hit, 0..1
+    "rrfScore": 0.0246,   // fused contribution that decided the order
+    "vectorRank": 0,
+    "keywordRank": 2
+  }
+}
+```
+
+| Symptom | Likely cause |
+|---|---|
+| `legs: ["keyword"]`, no `vectorScore` | Only the trigram leg matched. Expected for paraphrase queries under the `local` provider. |
+| `legs: ["vector"]` with a low `vectorScore` | Lexical overlap only. Rephrase, or switch provider. |
+| `keywordScore` near 0 for every hit | The query terms are absent from the corpus, or under 3 characters. |
+| No hits at all | Lower `min_score`, or set `SEARCH_MODE=keyword` to isolate which leg is failing. |
 
 ## Architecture
 
@@ -381,7 +480,7 @@ src/
 │   └── pipeline.ts         async ingest/search/retrieve, dedup, guards, doc mgmt
 ├── session/transcript.ts   read opencode sessions (global+local DB), ingest inputs
 ├── memory/memory.ts        remember / recall / consolidate + decay + prune
-├── mcp/rag-server.ts       MCP server (19 tools, stdio, npm bin)
+├── mcp/rag-server.ts       MCP server (20 tools, stdio, npm bin)
 ├── cli.ts                  CLI playground (incl. sync-session / sync-latest / sync-logs)
 └── test/test-all.ts        full test suite (unit + MCP round-trip)
 ```
@@ -399,6 +498,8 @@ Data lives in `.rag-data/rag.sqlite` (git-ignored).
 | `RAG_MAX_FILE_MB` | `10` | Reject files larger than this |
 | `RAG_ALLOWED_DIRS` | *(unset = anywhere)* | Semicolon/pipe/comma-separated allowed ingest roots |
 | `RAG_MEMORY_HALF_LIFE_DAYS` | `14` | Recall score decay half-life |
+| `RAG_DEDUP_MAX_VECTORS` | `500` | Above this many memories `consolidate` skips near-duplicate detection and reports `skippedDedup`. Raise it on a dedicated server (the pass is O(n²)) |
+| `RAG_VECTOR_CACHE_WARN_MB` | `256` | Warn when the in-memory vector cache exceeds this size |
 | `RAG_PRUNE` | `0` | Set `1` to allow `consolidate` to delete non-essential memories |
 | `RAG_PRUNE_IMPORTANCE` | `0.2` | Delete memories below this importance |
 | `RAG_PRUNE_AGE_DAYS` | `90` | ...and older than this (never-recalled only) |
@@ -523,7 +624,7 @@ can slow down the TUI. This repo ships exactly one plugin
 `npx … sync-latest` per 60s, spawned detached with `stdio: "ignore"` and
 `shell: false`. If it still costs too much, set `RAG_AUTOSYNC=0` (keeps the
 plugin, disables the auto-sync) or drop the `plugin` entry from
-`opencode.json` — the MCP server and its 19 tools keep working, you just have
+`opencode.json` — the MCP server and its 20 tools keep working, you just have
 to call `rag_sync_session` yourself.
 
 ---

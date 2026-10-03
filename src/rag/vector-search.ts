@@ -18,6 +18,24 @@ export interface SearchHit {
   content: string;
   score: number;
   tokenCount: number;
+  /** Which retrieval legs surfaced this chunk. Always populated; cheap and useful. */
+  legs: SearchLeg[];
+  /** Per-leg diagnostics. Populated only when `explain` is requested. */
+  explain?: SearchExplain;
+}
+
+export type SearchLeg = "vector" | "keyword";
+
+export interface SearchExplain {
+  /** Cosine similarity in [-1, 1]; absent when the chunk is keyword-only. */
+  vectorScore?: number;
+  /** BM25 relevance mapped to 0..1; absent when the chunk is vector-only. */
+  keywordScore?: number;
+  /** Reciprocal-rank-fusion contribution used to order the fused list. */
+  rrfScore: number;
+  /** Zero-based rank within each leg that contributed, for tie diagnosis. */
+  vectorRank?: number;
+  keywordRank?: number;
 }
 
 export interface SearchOptions {
@@ -66,6 +84,38 @@ function dropStaleCache(): void {
   if (current !== cacheDataVersion) invalidateVectorCache();
 }
 
+/**
+ * Warn once per cache build when the in-memory vector cache is large enough to
+ * threaten the host process.
+ *
+ * The cache is deliberately uncapped and complete: truncating it would silently
+ * change which documents are searchable, which is far worse than being slow. So
+ * the honest options are to say so, or to OOM. At 1024 dims the cache costs 8 KB
+ * per row, so 100k chunks is ~800 MB — the failure mode arrives suddenly, with
+ * no diagnostic until the process is already dying.
+ */
+const VECTOR_CACHE_WARN_MB_DEFAULT = 256;
+let cacheWarned = false;
+
+/** Read at call time so the threshold can be tuned without a rebuild. */
+function vectorCacheWarnMb(): number {
+  const raw = Number(process.env.RAG_VECTOR_CACHE_WARN_MB);
+  return Number.isFinite(raw) && raw > 0 ? raw : VECTOR_CACHE_WARN_MB_DEFAULT;
+}
+
+function warnIfLargeCache(table: string, rows: number, dim: number): void {
+  if (cacheWarned || dim <= 0) return;
+  const limitMb = vectorCacheWarnMb();
+  const mb = (rows * dim * 8) / (1024 * 1024);
+  if (mb < limitMb) return;
+  cacheWarned = true;
+  process.stderr.write(
+    `rag: vector cache for ${table} holds ${rows} rows (${dim}-dim) ≈ ${mb.toFixed(0)} MB in RAM ` +
+      `(threshold ${limitMb} MB). Search stays correct, but memory grows with the store; consider ` +
+      `pruning old documents, or set RAG_VECTOR_CACHE_WARN_MB to tune this warning.\n`
+  );
+}
+
 function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Float64Array }> {
   const db = getDB();
   dropStaleCache();
@@ -83,6 +133,7 @@ function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Flo
       if (vec) out.push({ id: r.id, vec });
     }
     cacheMemories = out;
+    warnIfLargeCache("memories", out.length, out[0]?.vec.length ?? 0);
     cacheDataVersion = dataVersion();
     return out;
   }
@@ -101,6 +152,7 @@ function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Flo
     if (vec) out.push({ id: r.id, id2: String(r.rid), docId: r.doc_id, vec });
   }
   cacheChunks = out;
+  warnIfLargeCache("chunks", out.length, out[0]?.vec.length ?? 0);
   cacheDataVersion = dataVersion();
   return out;
 }
@@ -148,12 +200,17 @@ export function vectorSearch(
  * BM25 keyword hits via FTS5, best-first. Returns empty when the query has no terms.
  * Filters are pushed into SQL (no id materialization) and every token is quoted as
  * an FTS5 string, so punctuation like "opencode-db" cannot void the keyword leg.
+ *
+ * The raw BM25 value is carried through. bm25() returns a negative number that
+ * becomes more negative as relevance rises, so it is negated into a positive
+ * relevance figure for reporting; without it the keyword leg had no observable
+ * strength at all, making it impossible to tell a bad ranking from a weak match.
  */
 function ftsHits(
   queryText: string,
   limit: number,
   filters?: SearchChunkFilters
-): Array<{ key: string }> {
+): Array<{ key: string; bm25: number }> {
   const tokens = queryText
     .toLowerCase()
     .replace(/[^\p{L}\p{N}_-]+/gu, " ")
@@ -177,7 +234,7 @@ function ftsHits(
   try {
     const rows = db
       .prepare(
-        `SELECT c.id
+        `SELECT c.id, bm25(chunks_fts) AS bm25
            FROM chunks_fts
            JOIN chunks c ON c.rowid = chunks_fts.rowid
            JOIN documents d ON d.id = c.doc_id
@@ -185,8 +242,8 @@ function ftsHits(
           ORDER BY bm25(chunks_fts)
           LIMIT ?`
       )
-      .all(quoteFtsQuery(tokens), ...params, limit) as Array<{ id: string }>;
-    return rows.map((r) => ({ key: r.id }));
+      .all(quoteFtsQuery(tokens), ...params, limit) as Array<{ id: string; bm25: number }>;
+    return rows.map((r) => ({ key: r.id, bm25: Number(r.bm25) }));
   } catch (e) {
     // FTS5 unavailable or an unsupported query — degrade to the vector leg
     // instead of failing the whole search, but say so on stderr.
@@ -220,6 +277,8 @@ export interface SearchChunkOptions {
   topK: number;
   minScore: number;
   filters?: SearchChunkFilters;
+  /** Attach per-leg scores to every hit. Costs nothing extra, but only populated on request. */
+  explain?: boolean;
 }
 
 /**
@@ -231,7 +290,7 @@ export interface SearchChunkOptions {
  * means the same thing in every mode (RRF only decides the order).
  */
 export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): SearchHit[] {
-  const { queryText = "", topK, minScore, filters } = opts;
+  const { queryText = "", topK, minScore, filters, explain = false } = opts;
   const db = getDB();
   const mode = searchMode();
 
@@ -262,7 +321,7 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
   if (mode !== "keyword") {
     vectorHits = vectorSearch(queryVec, { topK: cap, minScore, collection: "chunks", onlyDocIds: allowedDocIds });
   }
-  let kwHits: Array<{ key: string }> = [];
+  let kwHits: Array<{ key: string; bm25: number }> = [];
   if (mode !== "vector") {
     kwHits = allowedDocIds && allowedDocIds.size === 0 ? [] : ftsHits(queryText, cap, filters);
   }
@@ -274,16 +333,30 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
   const vectorScore = new Map<string, number>();
   for (const h of vectorHits) vectorScore.set(h.key, h.score);
 
+  // Per-leg ranks and true BM25 strength, kept for `explain` and for `legs`.
+  const vectorRank = new Map<string, number>();
+  vectorHits.forEach((h, rank) => vectorRank.set(h.key, rank));
+  const keywordRank = new Map<string, number>();
+  kwHits.forEach((h, rank) => keywordRank.set(h.key, rank));
+  const bm25Raw = new Map<string, number>();
+  for (const h of kwHits) bm25Raw.set(h.key, -h.bm25);
+
+  // Strongest BM25 in this result set defines the top of the 0..1 keyword scale,
+  // so keyword relevance is comparable between queries instead of being an
+  // absolute number that drifts with corpus size and term frequency.
+  const bm25Max = bm25Raw.size === 0 ? 0 : Math.max(...bm25Raw.values());
+  const bm25Norm = new Map<string, number>();
+  for (const [key, v] of bm25Raw) bm25Norm.set(key, bm25Max > 0 ? v / bm25Max : 0);
+
   let ordered: string[];
+  let rrf: Map<string, number> = new Map();
   if (mode === "vector") {
     ordered = vectorHits.slice(0, topK).map((h) => h.key);
   } else if (mode === "keyword") {
     ordered = kwHits.slice(0, topK).map((h) => h.key);
   } else {
-    ordered = [...rrfMerge([vectorHits, kwHits]).entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([key]) => key)
-      .slice(0, topK);
+    rrf = rrfMerge([vectorHits, kwHits]);
+    ordered = [...rrf.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key).slice(0, topK);
   }
 
   // Threshold on the final score, in every mode — not just on the vector leg.
@@ -311,19 +384,34 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
   }>;
   const byId = new Map(rows.map((r) => [r.id, r]));
 
-  return finalIds.flatMap((f) => {
+  return finalIds.flatMap((f): SearchHit[] => {
     const row = byId.get(f.key);
     if (!row) return [];
-    return [
-      {
-        id: row.id,
-        docId: row.doc_id,
-        docTitle: row.doc_title,
-        chunkIndex: row.idx,
-        content: row.content,
-        score: f.score,
-        tokenCount: row.token_count,
-      },
-    ];
+    const vRank = vectorRank.get(f.key);
+    const kRank = keywordRank.get(f.key);
+    const legs: SearchLeg[] = [];
+    if (vRank !== undefined) legs.push("vector");
+    if (kRank !== undefined) legs.push("keyword");
+    const hit: SearchHit = {
+      id: row.id,
+      docId: row.doc_id,
+      docTitle: row.doc_title,
+      chunkIndex: row.idx,
+      content: row.content,
+      score: f.score,
+      tokenCount: row.token_count,
+      legs,
+    };
+    if (explain) {
+      hit.explain = {
+        rrfScore: Number((rrf.get(f.key) ?? 0).toFixed(6)),
+        // The raw per-leg values, never `f.score`: that is max(cosine, keyword),
+        // so reporting it as the vector score would overstate the vector leg
+        // precisely when the keyword leg carried the hit.
+        ...(vRank !== undefined ? { vectorScore: vectorScore.get(f.key) as number, vectorRank: vRank } : {}),
+        ...(kRank !== undefined ? { keywordScore: bm25Norm.get(f.key) ?? 0, keywordRank: kRank } : {}),
+      };
+    }
+    return [hit];
   });
 }

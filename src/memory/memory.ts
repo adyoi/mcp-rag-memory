@@ -263,8 +263,21 @@ export interface ConsolidationReport {
   totals: { memories: number; tokens: number };
 }
 
-/** Above this many vectors the O(n^2) dedup pass is skipped (event-loop budget). */
-const DEDUP_MAX_VECTORS = 500;
+/**
+ * Above this many vectors the O(n^2) dedup pass is skipped to protect the
+ * event-loop budget: 500 vectors is ~250k comparisons, 5 000 would be ~25M and
+ * visibly stall a stdio server.
+ *
+ * Overridable because the right ceiling depends on the host. A dedicated server
+ * can afford far more, and a store that outgrows the default silently stops
+ * deduplicating — `skippedDedup` in the result is the only signal, so the bar
+ * must be adjustable rather than hardcoded.
+ */
+function dedupMaxVectors(): number {
+  const raw = Number(process.env.RAG_DEDUP_MAX_VECTORS);
+  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 500;
+}
+
 const DEDUP_SIMILARITY = 0.92;
 const DEDUP_TOKEN_OVERLAP = 0.8;
 
@@ -309,7 +322,7 @@ export async function consolidate(): Promise<ConsolidationReport> {
 
   const records = new Map(toRecords(rows).map((r) => [r.id, r]));
   let removedDuplicates = 0;
-  const skippedDedup = vectors.length > DEDUP_MAX_VECTORS;
+  const skippedDedup = vectors.length > dedupMaxVectors();
   const toDelete = new Set<string>();
   if (!skippedDedup) {
     for (let i = 0; i < vectors.length; i++) {

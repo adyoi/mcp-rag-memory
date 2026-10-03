@@ -415,16 +415,19 @@ async function main() {
       "rag_search", "rag_retrieve", "rag_list_documents", "rag_document_stats",
       "rag_delete_document", "memory_remember", "memory_recall", "memory_list",
       "memory_get", "memory_update", "memory_forget", "memory_consolidate",
-      "memory_stats", "memory_context", "rag_sync_session",
+      "memory_stats", "memory_context", "rag_sync_session", "rag_reindex",
     ];
     check("all tools registered", expected.every((t) => toolNames.includes(t)), `missing: ${expected.filter((t) => !toolNames.includes(t))}`);
-    check("exactly 19 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
+    check("exactly 20 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
 
     const sys = await client.callTool({ name: "system_stats", arguments: {} });
     const sysText = toolText(sys);
     const sysJson = JSON.parse(sysText.startsWith("---") ? sysText.replace(/^---.*$/m, "").trim() : sysText);
     check("system_stats has dbDir", sysJson.dbDir === TEST_DB, sysText.slice(0, 100));
     check("system_stats exposes embedding backend", typeof sysJson.embedding?.provider === "string", JSON.stringify(sysJson.embedding));
+    check("system_stats labels the vector leg honestly", sysJson.embedding?.vectorLeg === "lexical" || sysJson.embedding?.vectorLeg === "semantic", JSON.stringify(sysJson.embedding));
+    check("system_stats explains the vector leg", typeof sysJson.embedding?.note === "string" && sysJson.embedding.note.length > 20, JSON.stringify(sysJson.embedding?.note));
+    check("system_stats reports a coherent store state", sysJson.storeState === "ready", JSON.stringify(sysJson.storeState));
 
     // Note: shared DB — docs from earlier in-process ingestion are visible.
     const listDocs = await client.callTool({ name: "rag_list_documents", arguments: {} });
@@ -435,6 +438,33 @@ async function main() {
     check("rag_list_documents honours limit", pagedJson.documents.length === 1 && pagedJson.total >= 2, JSON.stringify(pagedJson).slice(0, 120));
     const badLimit = await client.callTool({ name: "rag_list_documents", arguments: { limit: 100_000 } });
     check("rag_list_documents rejects out-of-range limit", toolText(badLimit).length > 0);
+
+    // Unbounded strings used to reach the chunker and embedder as-is; the caps
+    // must reject them at the schema boundary instead of stalling the server.
+    const hugeQuery = await client.callTool({ name: "rag_search", arguments: { query: "a".repeat(5_000) } });
+    check("rag_search rejects an oversized query", /at most|too_big|too large|invalid|exceeds/i.test(toolText(hugeQuery)), toolText(hugeQuery).slice(0, 160));
+    const hugeContent = await client.callTool({
+      name: "rag_ingest_text",
+      arguments: { title: "Huge", content: "b".repeat(1_200_000) },
+    });
+    check("rag_ingest_text rejects oversized content", toolText(hugeContent).length > 0 && toolText(hugeContent).slice(0, 200).toLowerCase() !== "", "expected a schema rejection");
+    const manyTags = await client.callTool({
+      name: "memory_remember",
+      arguments: { content: "Tag flood probe", tags: Array.from({ length: 200 }, (_, i) => `t${i}`) },
+    });
+    check("memory_remember rejects too many tags", /at most|too_big|too large/i.test(toolText(manyTags)), toolText(manyTags).slice(0, 160));
+    const overlongTag = await client.callTool({
+      name: "memory_remember",
+      arguments: { content: "Tag length probe", tags: ["z".repeat(500)] },
+    });
+    check("memory_remember rejects an overlong tag", toolText(overlongTag).length > 0, toolText(overlongTag).slice(0, 120));
+
+    // explain must be opt-in over MCP too, and carry the same per-leg data.
+    const explainMcp = await client.callTool({ name: "rag_search", arguments: { query: "github actions pipeline", top_k: 3, explain: true } });
+    const explainJson = JSON.parse(toolText(explainMcp));
+    check("rag_search honours explain over MCP", explainJson.length >= 1 && explainJson[0].explain !== undefined, JSON.stringify(explainJson[0]).slice(0, 160));
+    const noExplainMcp = await client.callTool({ name: "rag_search", arguments: { query: "github actions pipeline", top_k: 3 } });
+    check("rag_search omits explain by default", JSON.parse(toolText(noExplainMcp))[0].explain === undefined);
 
     const ingest = await client.callTool({
       name: "rag_ingest_text",
@@ -761,6 +791,52 @@ const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after
   check("opencodeDbs() drops it again", !sess.opencodeDbs().some((p) => p === path.resolve(sessDbPath)));
   await rejects(async () => sess.getSessionTranscript("no-such-session"), /not found|No opencode/i);
 
+  // One unusable candidate DB must not hide a healthy one. Before this fix the
+  // probe loop had no per-DB guard, so a stale opencode.db anywhere in the search
+  // order aborted the whole sync and reported it as "session not found".
+  const corruptDbPath = path.join(TEST_DB, "corrupt-opencode.db");
+  const goodDbPath = path.join(TEST_DB, "good-opencode.db");
+  fs.writeFileSync(corruptDbPath, Buffer.from("this is definitely not a sqlite file"));
+  {
+    const good = new DatabaseSync(goodDbPath);
+    good.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
+    good.exec("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, data TEXT)");
+    good
+      .prepare("INSERT INTO session (id) VALUES (?)")
+      .run("survivor-session");
+    good
+      .prepare("INSERT INTO message (id, session_id, role, data) VALUES (?, ?, ?, ?)")
+      .run(
+        "m1",
+        "survivor-session",
+        "user",
+        JSON.stringify({ role: "user", parts: [{ type: "text", text: "the healthy db holds this transcript" }] })
+      );
+    good.close();
+  }
+  process.env.OPENCODE_DB = corruptDbPath;
+  process.env.OPENCODE_DB_LOCAL = goodDbPath;
+  const salvaged = await rejects(async () => sess.getSessionTranscript("survivor-session"), /not found|No opencode/i);
+  check("a corrupt candidate DB does not abort the whole probe", !salvaged, "healthy DB was never reached");
+  process.env.OPENCODE_DB = corruptDbPath;
+  delete process.env.OPENCODE_DB_LOCAL;
+  let isoErr = "";
+  try {
+    await sess.getSessionTranscript("survivor-session");
+  } catch (e) {
+    isoErr = e instanceof Error ? e.message : String(e);
+  }
+  // Whichever way it resolves, the operator must get an actionable message: never
+  // a raw "file is not a database" from whichever candidate happened to sort first.
+  check(
+    "a corrupt candidate never leaks a raw sqlite error",
+    /failed to read|not found/i.test(isoErr) && !/SQLITE_NOTADB|not a database/i.test(isoErr),
+    isoErr.slice(0, 220)
+  );
+  delete process.env.OPENCODE_DB;
+  fs.rmSync(corruptDbPath, { force: true });
+  fs.rmSync(goodDbPath, { force: true });
+
   // clean-all: the old list-then-delete loop only cleared the first 100 rows.
   const bulk = [];
   for (let i = 0; i < 105; i++) {
@@ -787,7 +863,123 @@ const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after
   const noForce = runCleanAll([]);
   check("clean-all refuses without --force", noForce.status === 1, String(noForce.status));
 
-  /* ================== 10. RESULTS ================== */
+  /* ================== 10. EXPLAINABILITY, REINDEX, SCALE GUARDS ================== */
+  console.log("\n=== 10. Explainability, Reindex, Scale Guards ===");
+  const { reindex } = await import("../rag/reindex.js");
+  const { setEmbedState, getEmbedState, getEmbedDim } = await import("../db/database.js");
+
+  // --- 10a. per-leg explain on the hybrid search -------------------------------
+  await rag.ingestText("Passport renewal requires a notarised photo and proof of address", "Passport renewal guide");
+  await rag.ingestText("The deployment pipeline runs lint, typecheck and the full test suite before release", "Release pipeline notes");
+  await rag.ingestText("Postgres connection pooling is configured with pgbouncer in transaction mode", "Database pooling notes");
+
+  const plainHits = await rag.searchDocs("notarised photo passport", 5);
+  check("hybrid search still returns hits", plainHits.length > 0, String(plainHits.length));
+  check("hits report which legs produced them", plainHits.every((h) => Array.isArray(h.legs) && h.legs.length > 0), JSON.stringify(plainHits.map((h) => h.legs)));
+  check("no explain payload unless requested", plainHits.every((h) => h.explain === undefined), JSON.stringify(plainHits[0]));
+
+  const explained = await rag.searchDocs("notarised photo passport", 5, 0.08, undefined, true);
+  check("explain attaches per-leg diagnostics", explained.length > 0 && explained.every((h) => h.explain !== undefined), JSON.stringify(explained[0]));
+  const withVector = explained.find((h) => h.explain?.vectorScore !== undefined);
+  check("explain reports a cosine for vector hits", withVector !== undefined && withVector.explain!.vectorScore! >= -1 && withVector.explain!.vectorScore! <= 1, JSON.stringify(withVector?.explain));
+  // The reported vector score must be the raw cosine, not the fused max(cosine,
+  // keyword) — otherwise a keyword-carried hit looks like a strong vector match,
+  // which is the exact misreading this flag exists to prevent.
+  check(
+    "explain does not report the fused score as the vector score",
+    explained.every((h) => h.explain?.vectorScore === undefined || h.explain.vectorScore <= h.score + 1e-9),
+    JSON.stringify(explained.map((h) => ({ score: h.score, v: h.explain?.vectorScore, k: h.explain?.keywordScore })))
+  );
+  const carriedByKeyword = explained.find(
+    (h) => h.explain?.vectorScore !== undefined && h.explain.keywordScore !== undefined && h.explain.keywordScore > h.explain.vectorScore
+  );
+  check(
+    "a keyword-carried hit exposes the weaker cosine",
+    carriedByKeyword === undefined || carriedByKeyword.explain!.vectorScore! < carriedByKeyword.score,
+    JSON.stringify(carriedByKeyword?.explain)
+  );
+  const withKeyword = explained.find((h) => h.explain?.keywordScore !== undefined);
+  check("explain reports a normalised BM25 for keyword hits", withKeyword !== undefined && withKeyword.explain!.keywordScore! >= 0 && withKeyword.explain!.keywordScore! <= 1, JSON.stringify(withKeyword?.explain));
+  check("keyword relevance ranks the best BM25 match at 1.0", explained.some((h) => h.explain?.keywordScore === 1), JSON.stringify(explained.map((h) => h.explain)));
+  const dual = explained.find((h) => h.legs.length === 2);
+  check("a dual-leg hit fuses both ranks", dual !== undefined && dual.explain!.rrfScore > 0 && dual.explain!.vectorRank !== undefined && dual.explain!.keywordRank !== undefined, JSON.stringify(dual?.explain));
+  const kwOnly = explained.find((h) => h.legs.length === 1 && h.legs[0] === "keyword");
+  check("a keyword-only hit is labelled as such", kwOnly === undefined || kwOnly.explain!.vectorScore === undefined, JSON.stringify(kwOnly?.explain));
+
+  // --- 10b. mid-reindex blocks every read --------------------------------------
+  setEmbedState("reindexing");
+  check("store state is visible as reindexing", getEmbedState() === "reindexing");
+  const blockedSearch = await rejects(() => rag.searchDocs("passport", 5), /reindex/i);
+  check("search refuses while the store is mid-reindex", blockedSearch);
+  const blockedRecall = await rejects(() => mem.recall("anything"), /reindex/i);
+  check("memory recall refuses while the store is mid-reindex", blockedRecall);
+  const blockedIngest = await rejects(() => rag.ingestText("should not land", "Blocked ingest"), /reindex/i);
+  check("ingest refuses while the store is mid-reindex", blockedIngest);
+  setEmbedState("ready");
+  check("search resumes once the store is coherent again", (await rag.searchDocs("passport", 5)).length > 0);
+
+  // --- 10c. reindex migrates in place ------------------------------------------
+  const chunksBefore = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
+  const memoriesBefore = (db.prepare("SELECT COUNT(*) AS c FROM memories").get() as { c: number }).c;
+  await mem.remember({ content: "The reindex test needs at least one memory row to migrate", type: "fact" });
+  const memoriesAfter = (db.prepare("SELECT COUNT(*) AS c FROM memories").get() as { c: number }).c;
+  check("the memory fixture row was stored", memoriesAfter === memoriesBefore + 1, JSON.stringify({ memoriesBefore, memoriesAfter }));
+
+  const progress: string[] = [];
+  const re = await reindex({ batchSize: 4, onProgress: (p) => progress.push(`${p.phase}:${p.done}/${p.total}`) });
+  check("reindex re-embeds every chunk", re.chunks === chunksBefore, JSON.stringify({ got: re.chunks, before: chunksBefore }));
+  check("reindex re-embeds every memory", re.memories === memoriesAfter, JSON.stringify({ got: re.memories, expected: memoriesAfter }));
+  check("reindex reports the model it migrated to", re.modelAfter.length > 0, JSON.stringify(re));
+  check("reindex restores the store to ready", getEmbedState() === "ready", getEmbedState());
+  check("reindex preserves the embedding dimension", re.dimAfter === getEmbedDim(), JSON.stringify({ dimAfter: re.dimAfter, stored: getEmbedDim() }));
+  check("reindex emits progress for both phases", progress.some((p) => p.startsWith("chunks")) && progress.some((p) => p.startsWith("memories")), progress.slice(0, 4).join(" "));
+  check("reindex emits a finalize step", progress.some((p) => p.startsWith("finalize")), progress.slice(-3).join(" "));
+
+  const afterReindex = await rag.searchDocs("notarised photo passport", 5);
+  check("documents are still searchable after reindex", afterReindex.length > 0, String(afterReindex.length));
+  check("reindex leaves no chunk vector missing", (db.prepare("SELECT COUNT(*) AS c FROM chunks WHERE embedding IS NULL").get() as { c: number }).c === 0);
+  check("reindex leaves no memory vector missing", (db.prepare("SELECT COUNT(*) AS c FROM memories WHERE embedding IS NULL").get() as { c: number }).c === 0);
+
+  // Idempotent: a second pass must not duplicate, drop, or corrupt anything.
+  const re2 = await reindex({ batchSize: 8 });
+  check("reindex is idempotent", re2.chunks === re.chunks && re2.memories === re.memories, JSON.stringify({ re2, re }));
+  check("reindex did not change the chunk count", (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c === chunksBefore);
+
+  // --- 10d. dedup ceiling is configurable, not hardcoded -----------------------
+  const savedCap = process.env.RAG_DEDUP_MAX_VECTORS;
+  process.env.RAG_DEDUP_MAX_VECTORS = "0";
+  const capped = await mem.consolidate();
+  check("dedup is skipped at the configured ceiling", capped.skippedDedup === true, JSON.stringify(capped));
+  check("consolidate still runs at the ceiling", typeof capped.removedDuplicates === "number", JSON.stringify(capped));
+  if (savedCap === undefined) delete process.env.RAG_DEDUP_MAX_VECTORS;
+  else process.env.RAG_DEDUP_MAX_VECTORS = savedCap;
+  process.env.RAG_DEDUP_MAX_VECTORS = "100000";
+  const uncapped = await mem.consolidate();
+  check("raising the ceiling re-enables dedup", uncapped.skippedDedup === false, JSON.stringify(uncapped));
+  if (savedCap === undefined) delete process.env.RAG_DEDUP_MAX_VECTORS;
+  else process.env.RAG_DEDUP_MAX_VECTORS = savedCap;
+
+  // --- 10e. vector cache warns before it becomes fatal -------------------------
+  const savedWarn = process.env.RAG_VECTOR_CACHE_WARN_MB;
+  process.env.RAG_VECTOR_CACHE_WARN_MB = "0.0001";
+  const { invalidateVectorCache } = await import("../rag/vector-search.js");
+  invalidateVectorCache();
+  let cacheWarn = "";
+  const realWrite = process.stderr.write.bind(process.stderr);
+  (process.stderr as unknown as { write: (c: string) => boolean }).write = (c: string) => {
+    if (typeof c === "string" && c.includes("vector cache")) cacheWarn += c;
+    return true;
+  };
+  await rag.searchDocs("passport", 3);
+  (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+  invalidateVectorCache();
+  check("a large vector cache warns before it can OOM", cacheWarn.includes("MB"), cacheWarn.slice(0, 160));
+  check("the cache warning names the tuning knob", cacheWarn.includes("RAG_VECTOR_CACHE_WARN_MB"), cacheWarn.slice(0, 160));
+  if (savedWarn === undefined) delete process.env.RAG_VECTOR_CACHE_WARN_MB;
+  else process.env.RAG_VECTOR_CACHE_WARN_MB = savedWarn;
+  invalidateVectorCache();
+
+  /* ================== 11. RESULTS ================== */
   console.log("\n=== RESULTS ===");
   console.log(`  Total:  ${passed + failed}`);
   console.log(`  Passed: ${passed}`);

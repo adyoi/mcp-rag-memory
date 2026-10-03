@@ -351,9 +351,15 @@ export async function ingestDirectory(
   return { ingested, skipped, ingestedCount, skippedCount };
 }
 
-export async function searchDocs(query: string, topK = 10, minScore = 0.08, filters?: SearchChunkFilters): Promise<SearchHit[]> {
+export async function searchDocs(
+  query: string,
+  topK = 10,
+  minScore = 0.08,
+  filters?: SearchChunkFilters,
+  explain = false
+): Promise<SearchHit[]> {
   const q = await embedText(query);
-  return searchChunks(q, { queryText: query, topK, minScore, filters });
+  return searchChunks(q, { queryText: query, topK, minScore, filters, explain });
 }
 
 export async function retrieve(

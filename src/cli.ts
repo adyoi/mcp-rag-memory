@@ -24,6 +24,7 @@
  *   memory-stats
  *   mem-context  <topic>
  *   stats                                       Everything
+ *   reindex    [--batch N]                      Re-embed all vectors for the current model
  *   sessions                                    List opencode sessions (recent first)
  *   sync-session <sessionId> [--limit N]        Ingest a session's user inputs to RAG
  *   sync-latest   [--limit N] [--dir PATH]      Ingest the most recent session (workspace-aware)
@@ -34,6 +35,7 @@ import "./env.js";
 import { ingestText, ingestFile, ingestDirectory, searchDocs, retrieve, listDocuments, deleteDocument, documentStats } from "./rag/pipeline.js";
 import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt, MEMORY_TYPES } from "./memory/memory.js";
 import { ingestSession, ingestJsonlFile, ingestLogDir, ingestLatest, listOpenCodeSessions } from "./session/transcript.js";
+import { reindex } from "./rag/reindex.js";
 import { closeDB, STORAGE_DIR } from "./db/database.js";
 import * as fs from "fs";
 
@@ -49,7 +51,7 @@ async function main() {
 }
 
 function helpText(): string {
-  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats|sessions|sync-session|sync-latest|sync-logs|ingest-jsonl`;
+  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats|reindex|sessions|sync-session|sync-latest|sync-logs|ingest-jsonl`;
 }
 
 function assertMemoryType(type: string): asserts type is (typeof MEMORY_TYPES)[number] {
@@ -83,10 +85,16 @@ async function run(cmd: string, args: string[]) {
         break;
       case "search": {
         const parsed = parseOpts(args);
-        out = await searchDocs(queryArg(parsed.positional), toNum(parsed.opts["top-k"], 10), toNum(parsed.opts["min-score"], 0.08), {
-          docId: parsed.opts["doc-id"],
-          source: parsed.opts.source,
-        });
+        out = await searchDocs(
+          queryArg(parsed.positional),
+          toNum(parsed.opts["top-k"], 10),
+          toNum(parsed.opts["min-score"], 0.08),
+          {
+            docId: parsed.opts["doc-id"],
+            source: parsed.opts.source,
+          },
+          parsed.opts.explain !== undefined
+        );
         break;
       }
       case "retrieve": {
@@ -180,6 +188,19 @@ async function run(cmd: string, args: string[]) {
       case "stats":
         out = { documents: documentStats(), memories: memoryStats(), dbDir: STORAGE_DIR };
         break;
+      case "reindex": {
+        const parsed = parseOpts(args);
+        out = await reindex({
+          batchSize: toNum(parsed.opts.batch, undefined),
+          onProgress: (p) => {
+            if (p.total > 0) {
+              process.stderr.write(`reindex ${p.phase}: ${p.done}/${p.total}\r`);
+            }
+          },
+        });
+        process.stderr.write("\n");
+        break;
+      }
       case "sessions": {
         const parsed = parseOpts(args);
         out = listOpenCodeSessions(toNum(parsed.opts.limit, 15) ?? 15, { directory: parsed.opts.dir });

@@ -38,11 +38,43 @@ export function modelName(): string {
   return EMBEDDING_PROVIDER === "local" ? "local-hash-1024" : EMBEDDING_MODEL;
 }
 
-export function embeddingInfo(): { provider: EmbeddingProvider; dim: number; model: string } {
+/**
+ * What the vector leg actually measures, reported honestly.
+ *
+ * `local` is a hashing embedder over character n-grams: it scores lexical and
+ * sub-word overlap, not meaning. A query and a document that use entirely
+ * different words for the same idea score near zero, no matter how well written
+ * either is. `transformers` produces true semantic vectors.
+ *
+ * Callers should not describe the `local` vector leg as "semantic"; the hybrid
+ * score is dominated by the FTS leg in that configuration, and an agent that
+ * believes otherwise will trust synonym-blind recall that is not there.
+ */
+export function vectorLegKind(): "lexical" | "semantic" {
+  return EMBEDDING_PROVIDER === "local" ? "lexical" : "semantic";
+}
+
+export function vectorLegNote(): string {
+  return EMBEDDING_PROVIDER === "local"
+    ? "Local hashing embedder: the vector leg scores lexical/sub-word overlap, not meaning. " +
+      "Synonym-only queries depend on the FTS5 trigram leg. Set EMBEDDING_PROVIDER=transformers " +
+      "(npm i @huggingface/transformers) then run 'rag_reindex' for true semantic recall."
+    : `Semantic embeddings from ${EMBEDDING_MODEL}; the vector leg captures meaning, not just overlap.`;
+}
+
+export function embeddingInfo(): {
+  provider: EmbeddingProvider;
+  dim: number;
+  model: string;
+  vectorLeg: "lexical" | "semantic";
+  note: string;
+} {
   return {
     provider: EMBEDDING_PROVIDER,
     dim: getEmbedDim() || expectedDim() || EMBED_DIM_LOCAL,
     model: modelName(),
+    vectorLeg: vectorLegKind(),
+    note: vectorLegNote(),
   };
 }
 
@@ -71,10 +103,27 @@ async function getExtractor(): Promise<any> {
 
 /** Embed text into a normalized Float64Array. Async for provider parity. */
 export async function embedText(text: string): Promise<Float64Array> {
+  const vec = await embedRaw(text);
+  ensureDim(vec, modelName());
+  return vec;
+}
+
+/**
+ * Embed without the store-dimension guard.
+ *
+ * `reindex` is the one operation whose entire purpose is to *replace* the stored
+ * vector space, so requiring the new vectors to already match the old ones would
+ * make the migration impossible to express. Every other caller must use
+ * `embedText`, which enforces the guard.
+ */
+export async function embedTextUnguarded(text: string): Promise<Float64Array> {
+  return embedRaw(text);
+}
+
+/** Provider call plus the finite-value check, shared by both entry points. */
+async function embedRaw(text: string): Promise<Float64Array> {
   if (EMBEDDING_PROVIDER === "local") {
-    const vec = embed(text);
-    ensureDim(vec, modelName());
-    return vec;
+    return embed(text);
   }
   const extractor = await getExtractor();
   const out = await extractor(text, { pooling: "mean", normalize: true });
@@ -94,6 +143,5 @@ export async function embedText(text: string): Promise<Float64Array> {
       );
     }
   }
-  ensureDim(vec, modelName());
   return vec;
 }

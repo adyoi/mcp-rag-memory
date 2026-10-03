@@ -194,7 +194,14 @@ function maxJsonlBytes(): number {
 }
 
 /** Extract user-typed text from one session, oldest first. Searches the global
- * and local opencode DBs (a session may live in either, depending on mode). */
+ * and local opencode DBs (a session may live in either, depending on mode).
+ *
+ * Each candidate DB is probed independently: `opencodeDbs()` returns both the
+ * global and local paths whether or not each one exists, so a stale or corrupt
+ * file must not abort the sync when a healthy DB is also present. Failures are
+ * collected and only reported when every candidate failed *and* none of them
+ * held the session, so a single bad path can no longer masquerade as
+ * "session not found". */
 export function getSessionTranscript(sessionId: string, limit = 0): SessionEntry[] {
   const dbs = opencodeDbs();
   if (dbs.length === 0) {
@@ -203,15 +210,42 @@ export function getSessionTranscript(sessionId: string, limit = 0): SessionEntry
         "opencode's opencode.db, or use 'ingest-dir' / 'ingest-text' instead."
     );
   }
+  const failures: string[] = [];
+  let probed = 0;
   for (const dbPath of dbs) {
-    const entries = transcriptFromDb(dbPath, sessionId, limit);
-    if (entries.length > 0) return entries;
-  }
-  // Nothing anywhere: distinguish "unknown session" from "no user messages".
-  for (const dbPath of dbs) {
-    if (sessionExists(dbPath, sessionId)) {
-      throw new Error(`Session ${sessionId} has no user messages to ingest.`);
+    if (!fs.existsSync(dbPath)) continue;
+    probed += 1;
+    try {
+      const entries = transcriptFromDb(dbPath, sessionId, limit);
+      if (entries.length > 0) return entries;
+    } catch (err) {
+      failures.push(`${dbPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  if (probed === 0) {
+    throw new Error(
+      "opencode DB not found. Set OPENCODE_DB (and/or OPENCODE_DB_LOCAL) to the path of " +
+        "opencode's opencode.db, or use 'ingest-dir' / 'ingest-text' instead."
+    );
+  }
+  // A readable DB that knows the session but holds no user text is a distinct,
+  // actionable case; only consider it once every DB has been probed cleanly.
+  if (failures.length < probed) {
+    for (const dbPath of dbs) {
+      try {
+        if (sessionExists(dbPath, sessionId)) {
+          throw new Error(`Session ${sessionId} has no user messages to ingest.`);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("no user messages")) throw err;
+      }
+    }
+  }
+  if (failures.length === probed) {
+    throw new Error(
+      `All ${probed} opencode DB(s) failed to read while looking up session ${sessionId}: ` +
+        failures.join("; ")
+    );
   }
   throw new Error(`Session ${sessionId} not found in any opencode DB (${dbs.join(", ")}).`);
 }

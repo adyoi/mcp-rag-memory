@@ -213,6 +213,8 @@ export function setEmbedMeta(dim: number, model: string) {
     "INSERT INTO meta(key, value) VALUES ('embed_model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(model);
   cachedDim = dim;
+  // A completed migration restores the store to a coherent state.
+  setEmbedState("ready");
 }
 
 /**
@@ -220,6 +222,11 @@ export function setEmbedMeta(dim: number, model: string) {
  * Prevents silently mixing vectors of different models/providers.
  */
 export function ensureDim(vec: Float64Array, model: string): void {
+  // A half-migrated store mixes old and new vectors: cosine across two spaces
+  // is meaningless and every search silently returns noise. Blocking here stops
+  // it at the one chokepoint every search and ingest already passes through,
+  // rather than letting a partial reindex look like a working store.
+  assertEmbedStateReady();
   const current = getEmbedDim();
   if (current === 0) {
     setEmbedMeta(vec.length, model);
@@ -250,4 +257,33 @@ export function getEmbedModel(): string {
     | { value: string }
     | undefined;
   return r ? r.value : "";
+}
+
+/**
+ * `embed_state` is '' (or 'ready') for a coherent store and 'reindexing' while a
+ * vector-space migration is in flight.
+ */
+export function getEmbedState(): string {
+  const r = getDB().prepare("SELECT value FROM meta WHERE key = 'embed_state'").get() as
+    | { value: string }
+    | undefined;
+  return r ? r.value : "";
+}
+
+export function setEmbedState(state: string): void {
+  getDB()
+    .prepare("INSERT INTO meta(key, value) VALUES('embed_state', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(state);
+}
+
+/** Throws when the store is mid-reindex. Called from ensureDim, the shared gate. */
+export function assertEmbedStateReady(): void {
+  const state = getEmbedState();
+  if (state !== "" && state !== "ready") {
+    throw new Error(
+      `Store is mid-reindex (embed_state=${state}): vectors from two embedding models are ` +
+        `mixed and search results would be meaningless. Run 'reindex' again to finish the ` +
+        `migration. Current store: ${STORAGE_DIR}.`
+    );
+  }
 }
