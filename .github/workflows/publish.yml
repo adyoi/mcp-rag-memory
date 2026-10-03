@@ -20,8 +20,13 @@ jobs:
           # Publishing (OIDC). Node 22 ships npm 10.9.8, which rejects the
           # short-lived OIDC exchange and falls back to needing a token.
           node-version: 24
-          registry-url: https://registry.npmjs.org/
           cache: npm
+          # registry-url is deliberately NOT set. It makes setup-node write an
+          # .npmrc containing "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}"
+          # plus always-auth, which puts npm on the token auth path: it prefers
+          # that token over the OIDC exchange and authenticates as nobody
+          # (E401 whoami, then E404 on publish). npm already defaults to
+          # registry.npmjs.org, and Trusted Publishing needs no .npmrc entry.
       - name: Install dependencies
         run: npm ci
       - name: Type-check + build
@@ -31,10 +36,11 @@ jobs:
       - name: Test
         run: npm test
       - name: Report the npm identity OIDC resolved
-        # Soft check: it surfaces the identity in the log early, but it must not
-        # become a new failure mode if npm only exchanges the OIDC token on
-        # publish. npm's own error is the authoritative signal.
-        run: npm whoami || echo "::warning::could not confirm npm identity before publish"
+        # Hard check on purpose: if Trusted Publishing is not wired up, this is
+        # where it should fail, before npm packs and uploads a tarball. A soft
+        # check here previously reported the E401 and let the run continue to a
+        # confusing E404.
+        run: npm whoami
       - name: Publish
         # No NODE_AUTH_TOKEN: setting it makes npm authenticate with the token
         # and ignore OIDC entirely, which is what silently forced 2FA before.
