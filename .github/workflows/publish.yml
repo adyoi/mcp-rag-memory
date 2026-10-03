@@ -27,12 +27,6 @@ jobs:
           # that token over the OIDC exchange and authenticates as nobody
           # (E401 whoami, then E404 on publish). npm already defaults to
           # registry.npmjs.org, and Trusted Publishing needs no .npmrc entry.
-      - name: Show the auth toolchain
-        run: |
-          node --version
-          npm --version
-          echo "OIDC env present: ID=${ACTIONS_ID_TOKEN_REQUEST_URL:+yes} TOKEN=${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
-          echo "npmrc files:"; npm config list 2>&1 | head -20
       - name: Install dependencies
         run: npm ci
       - name: Type-check + build
