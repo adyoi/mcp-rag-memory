@@ -21,20 +21,34 @@ export function getDB(): DatabaseSync {
   if (_db) return _db;
   ensureDir();
   const db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
-  // Wait up to 5s for a concurrent writer (CLI + MCP server + auto-save plugin
-  // all share the same store) instead of failing with SQLITE_BUSY immediately.
-  db.exec("PRAGMA busy_timeout = 5000;");
-  // Migrate BEFORE caching the handle: a failed migration must surface and be
-  // retried on the next call, never leave a half-migrated connection cached.
-  migrate(db);
+  try {
+    // busy_timeout first: every later statement should inherit it.
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    // Migrate BEFORE caching the handle: a failed migration must surface and be
+    // retried on the next call, never leave a half-migrated connection cached.
+    migrate(db);
+  } catch (e) {
+    // The handle is NOT cached on failure, so without this close every failed
+    // init leaked a file handle — reachable whenever a concurrent writer holds
+    // the lock, and it blocked later cleanup of the store directory on Windows.
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+    throw e;
+  }
   _db = db;
   return db;
 }
 
 function columnExists(db: DatabaseSync, table: string, column: string): boolean {
+  // PRAGMA cannot take a bound parameter, so the identifier is interpolated.
+  // Only ever called with literals; assert it so a future caller cannot inject.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error(`Unsafe table name: ${table}`);
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return cols.some((c) => c.name === column);
 }
@@ -81,6 +95,9 @@ function createSchema(db: DatabaseSync) {
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
     CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(updated_at DESC);
+    -- Filtered searches resolve doc ids via source/doc_id first; without this
+    -- every rag_search(source=...) scanned the whole documents table.
+    CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source);
 
     CREATE TABLE IF NOT EXISTS memories (
       id           TEXT PRIMARY KEY,
@@ -121,7 +138,7 @@ function createSchema(db: DatabaseSync) {
     .get() as { sql?: string } | undefined;
   if (ftsRow) {
     // Existing store built with 'unicode61' — recreate with trigram and backfill.
-    if (!ftsRow.sql!.includes("trigram")) rebuildFts(db);
+    if (!(ftsRow.sql ?? "").includes("trigram")) rebuildFts(db);
   } else {
     // First run with this schema (or a store whose FTS table was dropped):
     // create AND backfill, otherwise existing chunks silently lose keyword search
@@ -179,7 +196,10 @@ export function getEmbedDim(): number {
     const r = getDB().prepare("SELECT value FROM meta WHERE key = 'embed_dim'").get() as
       | { value: string }
       | undefined;
-    cachedDim = r ? Number(r.value) : 0;
+    const n = Number(r?.value);
+    // A corrupt row must not cache NaN: it would wedge this process with a
+    // misleading "dimension mismatch" until restart.
+    cachedDim = Number.isInteger(n) && n > 0 ? n : 0;
   }
   return cachedDim;
 }
@@ -210,6 +230,17 @@ export function ensureDim(vec: Float64Array, model: string): void {
       `Embedding dimension mismatch: DB stores ${current} (model: ${getEmbedModel()}), ` +
         `new vectors are ${vec.length} (model: ${model}). ` +
         `Use a consistent EMBEDDING_PROVIDER or wipe ${STORAGE_DIR}.`
+    );
+  }
+  // Same-dimension model swaps are the dangerous case: blending two vector
+  // spaces degrades search to noise with no error anywhere, and the only clue
+  // was a stale model name inside a dimension-mismatch message that never fired.
+  const currentModel = getEmbedModel();
+  if (currentModel && currentModel !== model) {
+    throw new Error(
+      `Embedding model mismatch: DB stores ${currentModel}, requested ${model} (both ${current}-dim). ` +
+        `Point RAG_DB_DIR at a fresh store or re-ingest with a consistent EMBEDDING_MODEL. ` +
+        `Current store: ${STORAGE_DIR}.`
     );
   }
 }

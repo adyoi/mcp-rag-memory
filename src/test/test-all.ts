@@ -293,6 +293,52 @@ async function main() {
   const survivor = mem.listMemories().find((m) => m.content.includes("Python"));
   check("consolidate keeps higher-importance memory", survivor?.importance === 0.9, JSON.stringify(survivor));
 
+  // Dedup must not collapse memories that merely share common vocabulary. These
+  // two are short and structurally opposite, so the cosine is high while the
+  // token overlap is low — the guard is what keeps "the user's X is Y" pairs
+  // from eating each other.
+  const keptA = await mem.remember({
+    content: "The deployment runs on Kubernetes.",
+    type: "fact",
+    importance: 0.6,
+  });
+  const keptB = await mem.remember({
+    content: "The deployment runs on bare metal.",
+    type: "fact",
+    importance: 0.6,
+  });
+  const guardReport = await mem.consolidate();
+  const survivors = mem.listMemories({ limit: 500 });
+  const keptBoth =
+    survivors.some((m) => m.id === keptA.id) && survivors.some((m) => m.id === keptB.id);
+  check("consolidate keeps high-cosine but distinct memories", keptBoth, JSON.stringify(guardReport));
+  check("distinct-guard pair counts as no duplicate", guardReport.removedDuplicates === 0, JSON.stringify(guardReport));
+
+  // Idempotence: a second pass over a deduplicated store must be a no-op.
+  const secondPass = await mem.consolidate();
+  check("consolidate is idempotent", secondPass.removedDuplicates === 0, JSON.stringify(secondPass));
+  mem.forget(keptA.id);
+  mem.forget(keptB.id);
+
+  // min_score must gate the score the caller receives, not just the raw cosine.
+  // A perfect match back-dated past the decay half-life decayed to ~0 and used to
+  // be returned anyway, because the floor was applied before decay.
+  const staleId = "test-stale-decay";
+  const staleVec = packVector(embed("Decay floor regression probe about deployment."));
+  const ancient = Date.now() - 400 * 86_400_000;
+  db.prepare(
+    `INSERT INTO memories (id, type, content, importance, embedding, tags, recall_count, last_recalled, created_at, updated_at)
+     VALUES (?, 'fact', ?, 0.9, ?, '[]', 0, NULL, ?, ?)`
+  ).run(staleId, "Decay floor regression probe about deployment.", staleVec, ancient, ancient);
+  // Our own connection's writes do not bump PRAGMA data_version, so the cached
+  // vectors must be dropped by hand after inserting outside the module.
+  rag.invalidateVectorCache();
+  const decayed = await mem.recall("Decay floor regression probe about deployment.", 10, 0.5);
+  check("min_score applies after decay", !decayed.some((h) => h.id === staleId), JSON.stringify(decayed.map((h) => h.id)));
+  const decayedLoose = await mem.recall("Decay floor regression probe about deployment.", 10, 0);
+  check("stale match still found with min_score=0", decayedLoose.some((h) => h.id === staleId), JSON.stringify(decayedLoose.map((h) => h.id)));
+  db.prepare("DELETE FROM memories WHERE id = ?").run(staleId);
+
   const del = mem.forget(m3.id);
   check("forget deletes memory", del.deleted === true);
   check("forget removed from list", mem.listMemories().length === 2);
@@ -673,8 +719,35 @@ async function main() {
   check("overlap 0 keeps every chunk bounded", noOverlap.every((c) => c.text.length <= 300), JSON.stringify(noOverlap.map((c) => c.text.length)));
   const withOverlap = chunkText(noOverlapText, { maxChars: 300, overlapChars: 80 });
   check("overlap 80 carries context forward", withOverlap.length > 1 && withOverlap.some((c, i) => i > 0 && carriesContext(withOverlap[i - 1].text, c.text)), JSON.stringify(withOverlap.length));
-  const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after the fence.", { maxChars: 200 });
-  check("fenced code is kept intact", codeChunked.length >= 1 && codeChunked[0].text.includes("```"), JSON.stringify(codeChunked[0]?.text.slice(0, 60)));
+const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after the fence.", { maxChars: 200 });
+    check("fenced code is kept intact", codeChunked.length >= 1 && codeChunked[0].text.includes("```"), JSON.stringify(codeChunked[0]?.text.slice(0, 60)));
+
+    // No chunk may exceed maxChars. The window is normally kept under budget,
+    // but carry() can prepend up to maxChars/2 to a full-size piece, and an
+    // over-budget chunk wastes embedder context for no retrieval gain.
+    const oversizeProbe = chunkText(
+      Array.from({ length: 12 }, (_, i) => `sentence number ${i} `.repeat(8)).join(" "),
+      { maxChars: 300, overlapChars: 150 }
+    );
+    check(
+      "every chunk stays within maxChars",
+      oversizeProbe.every((c) => c.text.length <= 300),
+      JSON.stringify(oversizeProbe.map((c) => c.text.length))
+    );
+    check(
+      "no text is lost when clamping",
+      (() => {
+        const probeNoSpace = oversizeProbe.map((c) => c.text.replace(/\s+/g, "")).join("");
+        const source = Array.from({ length: 12 }, (_, i) => `sentence number ${i} `.repeat(8)).join(" ");
+        return probeNoSpace.length >= source.replace(/\s+/g, "").length - 2;
+      })(),
+      JSON.stringify(oversizeProbe.length)
+    );
+    check(
+      "clamped chunk indices stay contiguous",
+      oversizeProbe.every((c, i) => c.index === i),
+      JSON.stringify(oversizeProbe.map((c) => c.index))
+    );
 
   // Session DB discovery must be read at call time, not frozen at import.
   const sessDbPath = path.join(TEST_DB, "fake-opencode.db");

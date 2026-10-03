@@ -71,9 +71,14 @@ function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Flo
   dropStaleCache();
   if (table === "memories") {
     if (cacheMemories) return cacheMemories;
-    const rows = db.prepare("SELECT id, embedding FROM memories").all() as Array<{ id: string; embedding: Uint8Array | null }>;
     const out: Array<{ id: string; vec: Float64Array }> = [];
-    for (const r of rows) {
+    // iterate(), not all(): .all() materialised every embedding blob as a
+    // Uint8Array first, so peak memory held the packed store AND the unpacked
+    // Float64Array copies at once. Streaming keeps one blob alive at a time.
+    // Nothing inside the loop touches the DB, so the open statement is safe.
+    for (const r of db
+      .prepare("SELECT id, embedding FROM memories")
+      .iterate() as IterableIterator<{ id: string; embedding: Uint8Array | null }>) {
       const vec = unpackVector(r.embedding);
       if (vec) out.push({ id: r.id, vec });
     }
@@ -83,11 +88,15 @@ function loadVectors(table: "chunks" | "memories"): Array<{ id: string; vec: Flo
   }
   // chunks keep their implicit rowid too, for FTS bookkeeping.
   if (cacheChunks) return cacheChunks;
-  const rows = db
-    .prepare("SELECT id, doc_id, rowid AS rid, embedding FROM chunks")
-    .all() as Array<{ id: string; doc_id: string; rid: number; embedding: Uint8Array | null }>;
   const out: Array<{ id: string; id2: string; docId: string; vec: Float64Array }> = [];
-  for (const r of rows) {
+  for (const r of db
+    .prepare("SELECT id, doc_id, rowid AS rid, embedding FROM chunks")
+    .iterate() as IterableIterator<{
+    id: string;
+    doc_id: string;
+    rid: number;
+    embedding: Uint8Array | null;
+  }>) {
     const vec = unpackVector(r.embedding);
     if (vec) out.push({ id: r.id, id2: String(r.rid), docId: r.doc_id, vec });
   }

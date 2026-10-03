@@ -179,10 +179,18 @@ export async function ingestLatest(
 
 /** Hard cap on user messages read from one session (a whole session can be huge). */
 const DEFAULT_MAX_MESSAGES = 500;
+/** 64 MB: far above any real session log, far below what would exhaust the heap. */
+const DEFAULT_MAX_LOG_BYTES = 64 * 1024 * 1024;
 
 function maxMessages(): number {
   const raw = Number(process.env.RAG_SESSION_MAX_MSGS);
   return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_MAX_MESSAGES;
+}
+
+/** Upper bound on a plugin-written .jsonl log before we refuse to read it. */
+function maxJsonlBytes(): number {
+  const raw = Number(process.env.RAG_SESSION_MAX_LOG_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_MAX_LOG_BYTES;
 }
 
 /** Extract user-typed text from one session, oldest first. Searches the global
@@ -231,8 +239,12 @@ function transcriptFromDb(dbPath: string, sessionId: string, limit: number): Ses
     const cap = limit > 0 ? limit : maxMessages();
     const msgs = db
       .prepare(
+        // json_valid() guards both sides: json_extract on a malformed blob raises
+        // "malformed JSON" and killed the whole read, so one corrupt part lost
+        // every other message in the session.
         `SELECT id, time_created, data FROM message
-          WHERE session_id = ? AND json_extract(data, '$.role') = 'user'
+          WHERE session_id = ? AND json_valid(data)
+            AND json_extract(data, '$.role') = 'user'
           ORDER BY time_created ASC
           LIMIT ?`
       )
@@ -241,7 +253,8 @@ function transcriptFromDb(dbPath: string, sessionId: string, limit: number): Ses
     // parsing every one of them just to throw it away was the memory spike.
     const partsStatement = db.prepare(
       `SELECT json_extract(data, '$.text') AS text FROM part
-        WHERE message_id = ? AND json_extract(data, '$.type') = 'text'`
+        WHERE message_id = ? AND json_valid(data)
+          AND json_extract(data, '$.type') = 'text'`
     );
 
     for (const m of msgs) {
@@ -261,6 +274,15 @@ function transcriptFromDb(dbPath: string, sessionId: string, limit: number): Ses
 /** Read entries from a plugin-written .jsonl file. */
 export function readJsonl(file: string): SessionEntry[] {
   if (!fs.existsSync(file)) throw new Error(`Not found: ${file}`);
+  // Bound the read: the plugin appends for the life of a session, so a long-running
+  // .jsonl grows without limit and readFileSync would pull all of it into memory.
+  const size = fs.statSync(file).size;
+  if (size > maxJsonlBytes()) {
+    throw new Error(
+      `Session log too large (${size} bytes > limit ${maxJsonlBytes()}): ${file}. ` +
+        `Rotate or truncate the log, or raise RAG_SESSION_MAX_LOG_BYTES.`
+    );
+  }
   const raw = fs.readFileSync(file, "utf8");
   const base = path.basename(file).replace(/\.jsonl$/, "");
   const entries: SessionEntry[] = [];

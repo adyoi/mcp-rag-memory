@@ -142,6 +142,18 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
   const emit = (content: string) => {
     const trimmed = content.trim();
     if (!trimmed) return;
+    // Backstop for maxChars. The window is normally kept under budget, but
+    // carry() (up to maxChars/2) plus a full-size piece could still land at
+    // ~1.5x, and an over-budget chunk blows the embedder's context for no
+    // benefit. Split rather than silently shipping an oversized chunk.
+    if (trimmed.length > maxChars) {
+      for (const part of splitLongText(trimmed, maxChars)) {
+        const t = part.trim();
+        if (!t) continue;
+        chunks.push({ text: t, index: cursor++, tokenCount: estimateTokens(t) });
+      }
+      return;
+    }
     chunks.push({
       text: trimmed,
       index: cursor++,
@@ -207,4 +219,15 @@ export function estimateTokens(text: string): number {
   const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
   const rest = text.length - cjk;
   return Math.ceil(cjk * 1.5) + Math.ceil(rest / 4);
+}
+
+/**
+ * Same estimate for an already-known character count. Lets a caller total
+ * LENGTH() across many rows in SQL instead of materialising each content
+ * blob just to re-count its characters. Assumes no CJK in the total, which
+ * under-counts CJK-heavy stores — the same tradeoff the SQL path already made.
+ */
+export function estimateTokensFromChars(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) return 0;
+  return Math.ceil(chars / 4);
 }

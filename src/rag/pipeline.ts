@@ -39,14 +39,38 @@ export interface IngestDirectoryOptions {
   metadata?: Record<string, unknown>;
 }
 
-/** Insert a FTS row, tolerating an unavailable FTS5 backend. */
+let ftsWarned = false;
+
+/** Insert a FTS row. Only a genuinely missing FTS5 backend degrades silently —
+ * any other failure (disk full, corruption, SQLITE_BUSY) must surface, because
+ * swallowing it left every chunk permanently invisible to the keyword leg with
+ * no diagnostic and no rebuild path. */
 function insertFtsRow(rowid: number, text: string): void {
   try {
     getDB().prepare("INSERT INTO chunks_fts(rowid, content) VALUES (?, ?)").run(rowid, text);
-  } catch {
-    // FTS missing — hybrid degrades to vector-only.
+  } catch (e) {
+    const msg = (e as Error).message;
+    // Match only "the FTS table is not there". A looser /chunks_fts/ test also
+    // swallowed UNIQUE and corruption errors, which are exactly the failures
+    // this change exists to surface.
+    if (!/no such table: chunks_fts|no such module: fts5/i.test(msg)) throw e;
+    if (!ftsWarned) {
+      ftsWarned = true;
+      process.stderr.write("rag: chunks_fts unavailable — hybrid search degraded to vector-only\n");
+    }
   }
 }
+
+/** SQLite UNIQUE violation, which node:sqlite surfaces as errcode 2067. */
+function isUniqueViolation(e: unknown, column: string): boolean {
+  const err = e as { errcode?: number; message?: string };
+  const msg = err?.message ?? "";
+  // "." must be escaped or it matches any character.
+  return err?.errcode === 2067 || msg.includes(`UNIQUE constraint failed: ${column}`);
+}
+
+/** Max content accepted from a tool call or CLI, so one payload cannot stall the server for a minute. */
+export const MAX_INGEST_CHARS = 1_000_000;
 
 export async function ingestText(
   content: string,
@@ -55,8 +79,16 @@ export async function ingestText(
 ): Promise<IngestResult> {
   const db = getDB();
   const ts = nowMs();
-  if (typeof content !== "string" || content.length === 0) {
+  // trim(): whitespace-only content produced a permanent 0-chunk document that
+  // could never be searched yet still occupied the content_hash unique index.
+  if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("Ingest content must be a non-empty string");
+  }
+  if (content.length > MAX_INGEST_CHARS) {
+    throw new Error(
+      `Ingest content too large (${content.length} chars > limit ${MAX_INGEST_CHARS}). ` +
+        `Split it, or use ingest_file / ingest_dir for large sources.`
+    );
   }
 
   // Content-hash dedup: identical documents are never re-embedded. `dedupScope`
@@ -81,14 +113,21 @@ export async function ingestText(
 
   const docId = newId();
   const chunks = chunkText(content);
+  if (chunks.length === 0) {
+    throw new Error("Ingest produced no indexable content (no non-whitespace text)");
+  }
   let tokens = 0;
 
   // Embed BEFORE opening the transaction. The MCP SDK does not serialize tool
   // calls, so awaiting inside a transaction let a concurrent request's writes
   // join this one — and a failure here rolled back that other request's work.
+  // The yield keeps the event loop responsive: a 10 MB file is ~11k chunks and
+  // the local embedder is synchronous, so without it the stdio server could not
+  // answer any other tool call for the whole ingest.
   const vectors: Float64Array[] = [];
-  for (const chunk of chunks) {
-    vectors.push(await embedText(chunk.text));
+  for (let i = 0; i < chunks.length; i++) {
+    vectors.push(await embedText(chunks[i].text));
+    if ((i & 15) === 15) await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   // All writes for one document are atomic, and the block below is fully
@@ -125,6 +164,24 @@ export async function ingestText(
       db.exec("ROLLBACK;");
     } catch {
       /* transaction already closed */
+    }
+    // Two identical ingests can both pass the dedup SELECT above: the check and
+    // this INSERT are separated by chunking + embedding, and MCP tool calls are
+    // not serialized. Let the unique index arbitrate and report a dedup hit
+    // rather than failing the caller with a raw driver error.
+    if (isUniqueViolation(e, "documents.content_hash")) {
+      const again = getDB()
+        .prepare("SELECT id, title, chunk_count FROM documents WHERE content_hash = ?")
+        .get(hash) as { id: string; title: string; chunk_count: number } | undefined;
+      if (again) {
+        return {
+          docId: again.id,
+          title: again.title,
+          chunks: again.chunk_count,
+          tokens: 0,
+          deduplicated: true,
+        };
+      }
     }
     throw e;
   }
@@ -194,11 +251,20 @@ export async function ingestFile(filePath: string, opts: IngestFileOptions = {})
 
   const content = fs.readFileSync(abs, "utf-8");
   const title = path.basename(abs);
-  return ingestText(content, title, {
+  return ingestText(stripBom(content), title, {
     source: abs,
     contentType: opts.contentType ?? guessContentType(abs),
     metadata: opts.metadata ?? { path: abs },
   });
+}
+
+/**
+ * Drop a UTF-8 BOM. It survives readFileSync as U+FEFF, so a Windows-authored
+ * .md file's first heading indexed as "\ufeff# Title" — the FTS trigram tokenizer
+ * keyed on it and the title never matched a plain "Title" query.
+ */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 /** Let the event loop breathe every N files during large directory ingests. */
@@ -208,6 +274,14 @@ function yieldLoop(): Promise<void> {
 
 /** Cap the payload: a big directory must not return one line per file. */
 const DIR_REPORT_LIMIT = 50;
+
+/**
+ * Hard ceiling on files actually ingested. DIR_REPORT_LIMIT only truncated the
+ * response, so pointing this at a large tree still embedded every file and held
+ * the server hostage; the cap is reported explicitly instead of silently
+ * dropping the remainder.
+ */
+const DIR_MAX_FILES = 500;
 
 export async function ingestDirectory(
   dirPath: string,
@@ -225,9 +299,12 @@ export async function ingestDirectory(
       if (typeof e !== "string" || e.trim() === "") throw new Error(`Invalid extension: ${JSON.stringify(e)}`);
     }
   }
-  const exts = opts.extensions?.map((e) => (e.startsWith(".") ? e : `.${e}`)) ?? [
+  // Lowercase once: `full.endsWith(e)` is case-sensitive, so an explicit
+  // extensions: [".TS"] silently matched nothing on a Windows-authored tree
+  // (or a request for ".Md" against README.MD).
+  const exts = (opts.extensions?.map((e) => (e.startsWith(".") ? e : `.${e}`)) ?? [
     ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".py", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".html", ".css",
-  ];
+  ]).map((e) => e.toLowerCase());
   const skipDirs = new Set([".git", "dist", "node_modules", ".rag-data", ".test-data", ".venv"]);
   const files: string[] = [];
   const walk = (dir: string) => {
@@ -235,20 +312,24 @@ export async function ingestDirectory(
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (opts.recursive && !skipDirs.has(entry.name) && !entry.name.startsWith(".")) walk(full);
-      } else if (entry.isFile() && exts.some((e) => full.endsWith(e))) {
+      } else if (entry.isFile() && exts.some((e) => full.toLowerCase().endsWith(e))) {
         files.push(full);
       }
     }
   };
   walk(root);
 
+  // Deterministic slice before any work: walk() order is filesystem-dependent,
+  // so capping after sorting keeps "which 500" reproducible across machines.
   const sorted = files.sort();
+  const truncated = Math.max(0, sorted.length - DIR_MAX_FILES);
+  const targets = truncated > 0 ? sorted.slice(0, DIR_MAX_FILES) : sorted;
   const ingested: IngestResult[] = [];
   const skipped: string[] = [];
   let ingestedCount = 0;
   let skippedCount = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const f = sorted[i];
+  for (let i = 0; i < targets.length; i++) {
+    const f = targets[i];
     try {
       const res = await ingestFile(f, { metadata: opts.metadata ?? { ingestDir: root } });
       ingestedCount++;
@@ -258,6 +339,14 @@ export async function ingestDirectory(
       if (skipped.length < DIR_REPORT_LIMIT) skipped.push(`${f} (${(e as Error).message})`);
     }
     if (i % 10 === 9) await yieldLoop();
+  }
+  if (truncated > 0) {
+    skippedCount += truncated;
+    if (skipped.length < DIR_REPORT_LIMIT) {
+      skipped.push(
+        `${truncated} more file(s) matched but were not ingested: directory ingest is capped at ${DIR_MAX_FILES} per call`
+      );
+    }
   }
   return { ingested, skipped, ingestedCount, skippedCount };
 }

@@ -83,6 +83,17 @@ export async function embedText(text: string): Promise<Float64Array> {
     throw new Error("transformers embed returned an unexpected shape");
   }
   const vec = Float64Array.from(data as ArrayLike<number>);
+  // A NaN/Inf from the model poisons every score it touches: dot products become
+  // NaN, comparisons go false, and the row silently stops matching anything —
+  // an invisible, permanent retrieval hole. Reject it at the boundary instead.
+  for (let i = 0; i < vec.length; i++) {
+    if (!Number.isFinite(vec[i])) {
+      throw new Error(
+        `Embedding for this input contains a non-finite value at index ${i}. ` +
+          `The input is likely empty or degenerate; retry with more text or set EMBEDDING_PROVIDER=local.`
+      );
+    }
+  }
   ensureDim(vec, modelName());
   return vec;
 }

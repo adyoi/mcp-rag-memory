@@ -4,6 +4,36 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-02
+
+> **Upgrade note.** Two new guards can reject work that previously succeeded on an
+> existing store: an `EMBEDDING_MODEL` swap at the same vector dimension now
+> fails loudly instead of silently degrading search to noise, and `ingest_dir`
+> processes at most 500 files per call. Both are configurable or one-time fixes
+> (point `RAG_DB_DIR` at a fresh store / re-ingest, or narrow the directory).
+
+### Fixed
+- **Consolidate no longer risks deleting the wrong memory.** The dedup pass compared vector *positions* while rewriting *ids*: when a later candidate outranked the current anchor, only the id was swapped, leaving the surviving id bound to the deleted memory's embedding, so subsequent comparisons in the same pass gated on another memory's vector. The whole entry is now swapped, and the pass iterates in a defined order (`importance DESC, created_at, id`) so the survivor is deterministic instead of depending on the query plan — which also makes the loser branch unreachable.
+- **`memory_recall` applies `min_score` to the score the caller receives.** The floor gated only the raw cosine inside the vector search, while decay multiplied afterwards, so a stale-but-exact match could return at ~0. The floor is now re-applied after decay.
+- **`updateMemory` is no longer a lost update.** It rewrote every column from a pre-read snapshot, so two concurrent patches each wrote back the other's stale values. It now updates only the fields present in the patch, no longer re-embeds or touches the row when the patch is empty, and re-acquires the DB handle after awaiting the model.
+- **`consolidate` runs as one transaction.** Dedup deletes, promotion and the optional prune each committed on their own, so a `SQLITE_BUSY` or a crash midway left duplicates deleted but promotion unapplied. It also now invalidates the vector cache when it removed rows, otherwise search kept returning deleted memories.
+- **A failed database init no longer leaks a file handle.** The connection is closed when migration throws; the handle was not cached on that path, so every failed init leaked one — reachable whenever a concurrent writer held the lock, and it blocked store cleanup on Windows. `busy_timeout` is now set before the statements it should govern.
+- **Embedding model mismatches are detected.** Only the dimension was checked, so swapping models at the same dimension blended two vector spaces into pure noise with no error anywhere. Same-dimension swaps now fail loudly.
+- **No chunk exceeds `maxChars`.** The carry-forward (up to `maxChars/2`) plus a full-size piece could emit a chunk at ~1.5x the limit; a 300-char budget produced 445-char chunks. Oversized windows are now split.
+- **Ingest bounds and hygiene**: whitespace-only content is rejected instead of creating a permanent unsearchable document; a size ceiling stops one payload from stalling the server; concurrent identical ingests are arbitrated by the unique index and reported as a dedup hit instead of failing with a raw driver error; embedding yields to the event loop every 16 chunks; directory ingest caps the files it processes (reported, not silently dropped); extension matching is case-insensitive; and a UTF-8 BOM is stripped, which otherwise keyed the FTS trigram tokenizer on `\ufeff` and hid a Windows-authored file's first heading.
+- **FTS write failures are no longer silently swallowed.** Only a genuinely missing `chunks_fts` degrades to vector-only search; disk-full, corruption and lock errors now surface instead of leaving chunks permanently invisible to the keyword leg with no diagnostic.
+- **Non-finite embedding values are rejected.** A `NaN`/`Inf` from the model turned every score it touched into `NaN`, so the row silently stopped matching anything.
+- **Corrupt session rows no longer abort a whole sync.** `json_extract` on a malformed blob raises "malformed JSON", which lost every other message in the session; both message and part queries are now guarded with `json_valid`. Session `.jsonl` logs are also size-bounded before being read.
+- **Vector cache memory halved.** Loading used `.all()`, which materialised every embedding blob before unpacking it, holding the packed store and the unpacked copies at once; it now streams with `.iterate()`.
+- **Deterministic pagination and cheaper stats**: memory listing has an `id` tiebreaker (millisecond `updated_at` left large tie groups for `LIMIT` to arbitrate), limits are clamped defensively, and token totals are computed from SQL `LENGTH()` instead of materialising `"x".repeat(n)` per row.
+
+### Changed
+- **Near-duplicate detection is bounded and safer.** The O(n²) pass is capped at 500 vectors (from 2000) and reports `skippedDedup` above that, keeping the worst case near 1s instead of ~20s of blocked event loop.
+- `documents.source` is indexed, so `rag_search(source=...)` no longer scans the whole table.
+
+### Added
+- **Test suite 160 -> 168 assertions**, including regressions verified to fail against the unfixed code: `min_score` after decay, the chunker `maxChars` bound, dedup keeping high-cosine-but-distinct memories, consolidate idempotence, and chunk-index contiguity under clamping.
+
 ## [2.5.0] - 2026-09-28
 
 ### Added
