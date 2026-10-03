@@ -35,13 +35,8 @@ jobs:
         run: npm run lint
       - name: Test
         run: npm test
-      - name: Report the npm identity OIDC resolved
-        # Hard check on purpose: if Trusted Publishing is not wired up, this is
-        # where it should fail, before npm packs and uploads a tarball. A soft
-        # check here previously reported the E401 and let the run continue to a
-        # confusing E404.
-        run: npm whoami
       - name: Publish
-        # No NODE_AUTH_TOKEN: setting it makes npm authenticate with the token
-        # and ignore OIDC entirely, which is what silently forced 2FA before.
+        # npm performs the OIDC exchange itself here, and only here: `npm whoami`
+        # does not, so it cannot be used as a pre-flight auth check (it always
+        # fails ENEEDAUTH even when Trusted Publishing is wired up correctly).
         run: npm publish --provenance --access public
