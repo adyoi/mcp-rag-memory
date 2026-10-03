@@ -36,11 +36,7 @@ jobs:
       - name: Test
         run: npm test
       - name: Publish
-        run: |
-          set +e
-          npm publish --provenance --access public --loglevel=silly > /tmp/pub.txt 2>&1
-          echo "===== publish output ====="
-          cat /tmp/pub.txt
-          LOG=$(ls -t /home/runner/.npm/_logs/*-debug-0.log 2>/dev/null | head -1)
-          echo "===== npm auth diagnostics from $LOG ====="
-          grep -iE "oidc|trusted|id_token|ACTIONS_ID|auth|provenance|audience" "$LOG" | head -60
+        # npm performs the OIDC exchange itself here, and only here: `npm whoami`
+        # does not, so it cannot be used as a pre-flight auth check (it always
+        # fails ENEEDAUTH even when Trusted Publishing is wired up correctly).
+        run: npm publish --provenance --access public
