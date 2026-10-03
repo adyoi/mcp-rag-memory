@@ -16,17 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # Node 24 bundles npm 11, the first line that supports Trusted
-          # Publishing (OIDC). Node 22 ships npm 10.9.8, which rejects the
-          # short-lived OIDC exchange and falls back to needing a token.
+          # Node 24 bundles npm 11.
           node-version: 24
+          # registry-url is required on the token path: it writes the
+          # .npmrc entry that binds NODE_AUTH_TOKEN to registry.npmjs.org.
+          # npm does not resolve a bare NODE_AUTH_TOKEN without it.
+          registry-url: https://registry.npmjs.org/
           cache: npm
-          # registry-url is deliberately NOT set. It makes setup-node write an
-          # .npmrc containing "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}"
-          # plus always-auth, which puts npm on the token auth path: it prefers
-          # that token over the OIDC exchange and authenticates as nobody
-          # (E401 whoami, then E404 on publish). npm already defaults to
-          # registry.npmjs.org, and Trusted Publishing needs no .npmrc entry.
       - name: Install dependencies
         run: npm ci
       - name: Type-check + build
@@ -36,7 +32,9 @@ jobs:
       - name: Test
         run: npm test
       - name: Publish
-        # npm performs the OIDC exchange itself here, and only here: `npm whoami`
-        # does not, so it cannot be used as a pre-flight auth check (it always
-        # fails ENEEDAUTH even when Trusted Publishing is wired up correctly).
+        # Token path, not Trusted Publishing: the token is a granular access
+        # token scoped to mcp-rag-memory with --bypass-2fa, which is what the
+        # npm registry requires for direct publishing.
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
