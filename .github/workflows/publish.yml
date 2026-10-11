@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for npm provenance
+  id-token: write # required: npm exchanges this OIDC token for a publish credential
 
 jobs:
   publish:
@@ -16,12 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # Node 24 bundles npm 11.
+          # Node 24 bundles npm 11, which implements Trusted Publishing (npm >= 11.5.1).
           node-version: 24
-          # registry-url is required on the token path: it writes the
-          # .npmrc entry that binds NODE_AUTH_TOKEN to registry.npmjs.org.
-          # npm does not resolve a bare NODE_AUTH_TOKEN without it.
-          registry-url: https://registry.npmjs.org/
           cache: npm
       - name: Install dependencies
         run: npm ci
@@ -32,9 +28,11 @@ jobs:
       - name: Test
         run: npm test
       - name: Publish
-        # Token path, not Trusted Publishing: the token is a granular access
-        # token scoped to mcp-rag-memory with --bypass-2fa, which is what the
-        # npm registry requires for direct publishing.
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Trusted Publishing (OIDC): no NODE_AUTH_TOKEN and no registry-url.
+        # setup-node's registry-url writes an .npmrc bound to ${NODE_AUTH_TOKEN};
+        # with no secret configured that empty value shadows the OIDC exchange and
+        # npm fails with E404 before it ever calls the provenance endpoint.
+        run: |
+          echo "npm $(npm --version), node $(node --version)"
+          echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}${NODE_AUTH_TOKEN:-no}"
+          npm publish --provenance --access public
