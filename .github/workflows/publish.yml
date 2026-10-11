@@ -32,7 +32,13 @@ jobs:
         # setup-node's registry-url writes an .npmrc bound to ${NODE_AUTH_TOKEN};
         # with no secret configured that empty value shadows the OIDC exchange and
         # npm fails with E404 before it ever calls the provenance endpoint.
-        # The npm trusted-publisher form takes the workflow filename only (publish.yml),
-        # not a path, and existing connections are immutable, so a wrong value means
-        # delete + re-add.
-        run: npm publish --provenance --access public
+        # Idempotent: an aligned tag (e.g. a manual publish made a tag push a
+        # no-op) re-triggers this workflow, so skip when the version is already
+        # on the registry instead of failing with "cannot publish over".
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          if npm view "mcp-rag-memory@${VER}" version >/dev/null 2>&1; then
+            echo "mcp-rag-memory@${VER} is already on the registry; skipping publish."
+          else
+            npm publish --provenance --access public
+          fi
