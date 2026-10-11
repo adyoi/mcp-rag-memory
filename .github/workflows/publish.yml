@@ -27,6 +27,24 @@ jobs:
         run: npm run lint
       - name: Test
         run: npm test
+      - name: Diagnose OIDC exchange
+        # Probe from npm/cli#8525: exchange the GitHub ID token for an npm publish
+        # token directly. A 200 means the trusted-publisher binding (owner, repo,
+        # workflow filename, environment) matches and a real publish will work; a
+        # 404 "package not found" means it does not. continue-on-error so the
+        # publish step still runs and we see the full picture in one run.
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          REG=$(npm -s config get registry || true); REG=${REG%/}; : "${REG:=https://registry.npmjs.org}"
+          HOST=${REG#*://}; HOST=${HOST%%/*}
+          ID=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:${HOST}" | jq -er .value)
+          PKG=$(jq -r '.name|@uri' package.json)
+          echo "package=$PKG registry=$REG workflows=$GITHUB_WORKFLOW_REF"
+          curl -sS -o /tmp/exchange.json -w "exchange HTTP %{http_code}\n" \
+            -H "Authorization: Bearer $ID" "$REG/-/npm/v1/oidc/token/exchange/package/$PKG" -d ""
+          echo "--- body ---"; cat /tmp/exchange.json
       - name: Publish
         # Trusted Publishing (OIDC): no NODE_AUTH_TOKEN and no registry-url.
         # setup-node's registry-url writes an .npmrc bound to ${NODE_AUTH_TOKEN};
