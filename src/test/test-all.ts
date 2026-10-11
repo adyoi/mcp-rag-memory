@@ -799,25 +799,41 @@ const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after
   fs.writeFileSync(corruptDbPath, Buffer.from("this is definitely not a sqlite file"));
   {
     const good = new DatabaseSync(goodDbPath);
-    good.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
-    good.exec("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, data TEXT)");
+    // Must match the schema transcriptFromDb asserts (message.time_created, a part
+    // table). A fixture missing these throws a schema error of its own, so the
+    // "healthy" DB looks as broken as the corrupt one and the test would pass
+    // without ever proving isolation.
+    good.exec("CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, time_updated INTEGER)");
+    good.exec("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)");
+    good.exec("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, data TEXT)");
+    good.prepare("INSERT INTO session (id, directory, time_updated) VALUES (?, ?, ?)").run("survivor-session", "/tmp", 1);
     good
-      .prepare("INSERT INTO session (id) VALUES (?)")
-      .run("survivor-session");
+      .prepare("INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)")
+      .run("m1", "survivor-session", 1, JSON.stringify({ role: "user" }));
     good
-      .prepare("INSERT INTO message (id, session_id, role, data) VALUES (?, ?, ?, ?)")
-      .run(
-        "m1",
-        "survivor-session",
-        "user",
-        JSON.stringify({ role: "user", parts: [{ type: "text", text: "the healthy db holds this transcript" }] })
-      );
+      .prepare("INSERT INTO part (id, message_id, data) VALUES (?, ?, ?)")
+      .run("p1", "m1", JSON.stringify({ type: "text", text: "the healthy db holds this transcript" }));
     good.close();
   }
   process.env.OPENCODE_DB = corruptDbPath;
   process.env.OPENCODE_DB_LOCAL = goodDbPath;
-  const salvaged = await rejects(async () => sess.getSessionTranscript("survivor-session"), /not found|No opencode/i);
-  check("a corrupt candidate DB does not abort the whole probe", !salvaged, "healthy DB was never reached");
+  // The strong assertion: the healthy candidate's transcript must actually come
+  // back. Asserting "it threw no schema error" was not enough — a throwing
+  // healthy DB also satisfied the old check, which is exactly how this slipped
+  // past on Windows and failed on Linux.
+  let salvagedContent = "";
+  let salvagedErr = "";
+  try {
+    const entries = await sess.getSessionTranscript("survivor-session");
+    salvagedContent = entries.map((e) => e.content).join("\n");
+  } catch (e) {
+    salvagedErr = e instanceof Error ? e.message : String(e);
+  }
+  check(
+    "a corrupt candidate DB does not abort the whole probe",
+    salvagedContent.includes("the healthy db holds this transcript"),
+    salvagedErr || JSON.stringify(salvagedContent)
+  );
   process.env.OPENCODE_DB = corruptDbPath;
   delete process.env.OPENCODE_DB_LOCAL;
   let isoErr = "";
