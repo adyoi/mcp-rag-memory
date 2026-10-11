@@ -2,8 +2,9 @@
  * Local hashing embedder — no external API, no native deps.
  *
  * Produces a normalized 1024-dimensional vector using the hashing trick:
- * - Tokenize text into character 1/2/3-grams (robust for CJK + Latin mixed text)
- *   plus whole words for ASCII runs.
+ * - Whole words and adjacent word pairs (bi-grams) for latin/digit runs, which
+ *   keeps phrase identity order-sensitive ("client server" ≠ "server client").
+ * - Character 1/2/3-grams (robust for CJK + Latin mixed text).
  * - Map each feature to a bucket via FNV-1a, with a deterministic sign.
  * - Value per bucket = sqrt(feature count) * sign, then L2-normalized.
  *
@@ -27,12 +28,24 @@ function* charNgrams(text: string, n: number): Generator<string> {
   }
 }
 
-function* tokenize(text: string): Generator<string> {
+export function* tokenize(text: string): Generator<string> {
   const lowered = text.toLowerCase();
 
   // Whole words for latin/digit runs
   const words = lowered.match(/[a-z0-9_]+/g);
-  if (words) for (const w of words) if (w.length >= 2) yield w;
+  if (words) {
+    for (const w of words) if (w.length >= 2) yield w;
+    // Adjacent word pairs keep phrase identity: the single-word buckets already
+    // respond to term overlap, but "client server" and "server client" map to
+    // the same bucket set — bi-grams separate them order-sensitively without a
+    // true semantic model. Skipping the seed term keeps "a the" noise out.
+    for (let i = 0; i + 1 < words.length; i++) {
+      if (words[i].length >= 2 && words[i + 1].length >= 2) {
+        if (STOP_WORDS.has(words[i]) || STOP_WORDS.has(words[i + 1])) continue;
+        yield `w2:${words[i]}:${words[i + 1]}`;
+      }
+    }
+  }
 
   // Character bigrams + trigrams cover CJK and subword info
   for (const g of charNgrams(lowered, 2)) yield "g2:" + g;
@@ -44,6 +57,13 @@ function* tokenize(text: string): Generator<string> {
     if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(ch)) yield "cjk:" + ch;
   }
 }
+
+/** High-frequency English function words add no phrase signal to a bigram. */
+const STOP_WORDS: ReadonlySet<string> = new Set([
+  "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "by", "for", "with",
+  "from", "as", "is", "are", "was", "were", "be", "been", "this", "that", "it",
+  "its", "i", "you", "we", "they", "he", "she", "my", "your", "our", "their",
+]);
 
 function hashToBucket(feature: string): { bucket: number; sign: number } {
   const h = fnv1a(feature);

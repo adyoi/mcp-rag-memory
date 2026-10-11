@@ -16,11 +16,11 @@ Always run `npm run lint` and `npm test` after a change; the suite's final line 
 
 ## Architecture
 
-- `src/mcp/rag-server.ts` — MCP server over stdio (20 tools); read this first.
-- `src/rag/` — ingestion and hybrid search (vector cosine ⊕ FTS5 BM25, RRF fusion); `chunks_fts` uses the trigram tokenizer (CJK + substring).
-- `src/memory/` — curated long-term memories (facts/preferences/decisions/tasks/...).
+- `src/mcp/rag-server.ts` — MCP server over stdio (21 tools); read this first.
+- `src/rag/` — ingestion and hybrid search (vector cosine ⊕ FTS5 BM25, RRF fusion); `chunks_fts` uses the trigram tokenizer (CJK + substring). `RAG_RRF_K` tunes the RRF constant; `rag_search(alpha=0..1)` replaces RRF with `alpha·cosine + (1−alpha)·BM25`.
+- `src/memory/` — curated long-term memories (facts/preferences/decisions/tasks/...); prune age is anchored on last activity (`COALESCE(last_recalled, created_at)`).
 - `src/session/` — sync opencode's own DB into the store (`source: opencode-db` / `session-log`), schema-guarded, probed per candidate DB so a corrupt one cannot hide a healthy one.
-- `src/db/database.ts` — SQLite storage (`documents`, `chunks`, `memories`, `chunks_fts`).
+- `src/db/database.ts` — SQLite storage (`documents`, `chunks`, `memories`, `chunks_fts`) + `integrityCheck` / `backupStore` (VACUUM INTO) / `restoreStore` / `storeHealthSummary`.
 - `src/env.ts` + `src/index.ts` — zero-dependency `.env` loader and boot shim (host env wins; `RAG_ENV_FILE`/`<cwd>/.env`).
 - Store dir from `RAG_DB_DIR` (default `.rag-data`, gitignored).
 
@@ -29,9 +29,11 @@ Always run `npm run lint` and `npm test` after a change; the suite's final line 
 Do not describe the default embedding backend as "semantic".
 
 - `EMBEDDING_PROVIDER=local` (default) is a **lexical** hashing embedder over character
-  1/2/3-grams. It scores lexical and sub-word overlap, not meaning, so paraphrase-only
-  queries ("cara fix login" vs "masalah autentikasi") score near zero on the vector leg.
-  Retrieval still works via the FTS5 trigram leg; paraphrase recall is the blind spot.
+  1/2/3-grams plus word bi-grams. It scores lexical and sub-word overlap, not meaning, so
+  paraphrase-only queries ("cara fix login" vs "masalah autentikasi") score near zero on
+  the vector leg. Retrieval still works via the FTS5 trigram leg; paraphrase recall is the
+  blind spot. The model id (`local-lexical-v2`) changes when the feature set changes, which
+  forces a one-time `reindex` on existing stores.
 - `EMBEDDING_PROVIDER=transformers` is the only genuinely **semantic** option (optional
   dep). After switching, run `reindex` to migrate the store.
 - `system_stats` reports this as `embedding.vectorLeg` + `embedding.note`. Keep that field

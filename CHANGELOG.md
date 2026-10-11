@@ -4,6 +4,34 @@ All notable changes to **mcp-rag-memory** are documented here. Uses [Keep a Chan
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-11
+
+> **Upgrade note.** The bundled local embedder gained word bi-grams and now
+> reports the model id **`local-lexical-v2`**. That is a new vector space, so an
+> existing store refuses to search until it is migrated: run `rag_reindex` (or
+> `npm run cli -- reindex`) **once** after upgrading — it re-embeds in place and
+> is safe to re-run. Everything else is additive: a new optional `alpha` blend,
+> a `RAG_RRF_K` knob (default `60`, the previous constant), the `rag_backup`
+> tool, a `db.health` block in `system_stats`, `cli backup`/`restore`, and
+> last-activity-anchored pruning.
+
+### Added
+- **`rag_backup` — consistent snapshots (MCP tool + `cli backup`).** `VACUUM INTO` produces a single-file snapshot of the live store that is safe to take while the server is running (SQLite serialises it against the WAL, unlike a raw file copy). It reports document/chunk/memory counts and runs `PRAGMA integrity_check` on the result, and refuses to overwrite an existing file so a typo cannot destroy the previous snapshot. Restore is deliberately offline (`cli restore <file>`, server stopped): it checkpoints the WAL, closes the handle, replaces the file and re-verifies integrity.
+- **Directional hybrid search via `alpha` (0..1).** `rag_search(alpha=…)` and `cli search --alpha` replace Reciprocal Rank Fusion with `alpha·cosine + (1−alpha)·BM25` (`0` = keyword-only, `1` = vector-only). RRF is a good default but undefeatable by a badly calibrated store; `alpha` gives a real 0..1 relevance score and a single knob to bias toward one leg without leaving hybrid mode. Validated at the schema and in the engine.
+- **`RAG_RRF_K` (default `60`, the previous constant).** The RRF constant is now read at call time, so it can be tuned per deployment (or per test) to widen or sharpen the rank spread.
+- **`db.health` in `system_stats`.** Reports store path and an `integrity_check` verdict (`ok` / corrupt / deferred). The check is skipped — surfaced as `deferred` — above 100 000 rows so a status call can never stall the stdio server; use `rag_backup` for a full check on large stores.
+- **Memory pruning is anchored on last activity.** `RAG_PRUNE_AGE_DAYS` now counts from `COALESCE(last_recalled, created_at)`, so a memory that was recently recalled is no longer treated as stale just because it was created long ago.
+
+### Changed
+- **Local embedder v2 (`local-lexical-v2`): word bi-grams on top of character n-grams.** The default hashing embedder previously scored character 1/2/3-grams only, so it was blind to word adjacency and easily confused by shared substrings. It now also hashes word bi-grams (`w2:word1:word2`), skipping function words via a small stop-word set, so phrase identity influences the vector a little. It remains **lexical**, not semantic (`system_stats.embedding.vectorLeg` still says so) — the paraphrase blind spot is unchanged; this only sharpens overlap.
+- **Doc-facing scoring guidance.** The README documents that `min_score` means different things in the two ordering modes (a small RRF contribution vs a true 0..1 blend value) and how to calibrate it, plus the new `RAG_RRF_K` and `alpha` knobs.
+
+### Fixed
+- **`integrityCheck` no longer throws on a corrupt or foreign file.** Opening a non-SQLite path raised `ERR_SQLITE_ERROR` out of the very helper meant to classify such a file; it now returns `{ ok: false, firstError }` instead, so `rag_backup`/health reporting degrade gracefully.
+
+### Notes
+- **Test suite 211 -> 238 assertions**, covering embedder v2 bi-gram features and the model-id bump, the `alpha` blend (including exact `alpha·cosine + (1−alpha)·BM25` per hit), `RAG_RRF_K` closed-form `rrfScore`, backup/restore round-trips (mutate → restore → verify), corrupt-file integrity reporting, last-activity pruning, and a responsiveness check asserting ingest yields to the event loop.
+
 ## [2.7.0] - 2026-10-03
 
 > **Upgrade note.** No action required. Searches, ingests and recalls now fail

@@ -416,9 +416,10 @@ async function main() {
       "rag_delete_document", "memory_remember", "memory_recall", "memory_list",
       "memory_get", "memory_update", "memory_forget", "memory_consolidate",
       "memory_stats", "memory_context", "rag_sync_session", "rag_reindex",
+      "rag_backup",
     ];
     check("all tools registered", expected.every((t) => toolNames.includes(t)), `missing: ${expected.filter((t) => !toolNames.includes(t))}`);
-    check("exactly 20 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
+    check("exactly 21 tools", toolNames.length === expected.length, `got ${toolNames.length}`);
 
     const sys = await client.callTool({ name: "system_stats", arguments: {} });
     const sysText = toolText(sys);
@@ -428,6 +429,17 @@ async function main() {
     check("system_stats labels the vector leg honestly", sysJson.embedding?.vectorLeg === "lexical" || sysJson.embedding?.vectorLeg === "semantic", JSON.stringify(sysJson.embedding));
     check("system_stats explains the vector leg", typeof sysJson.embedding?.note === "string" && sysJson.embedding.note.length > 20, JSON.stringify(sysJson.embedding?.note));
     check("system_stats reports a coherent store state", sysJson.storeState === "ready", JSON.stringify(sysJson.storeState));
+    check("system_stats reports store integrity", sysJson.db?.health?.status === "ok", JSON.stringify(sysJson.db));
+
+    // Backup over MCP: consistent snapshot, no overwrite of an existing file.
+    const bkPath = path.join(TEST_DB, "backups", "mcp-roundtrip.sqlite");
+    const bk = await client.callTool({ name: "rag_backup", arguments: { target_path: bkPath } });
+    const bkJson = JSON.parse(toolText(bk));
+    check("rag_backup writes a consistent snapshot", bkJson.integrity?.ok === true && fs.existsSync(bkJson.path) && bkJson.documents >= 2, JSON.stringify(bkJson));
+    const bkDup = await client.callTool({ name: "rag_backup", arguments: { target_path: bkPath } });
+    check("rag_backup refuses to overwrite an existing file", !toolText(bkDup).includes("integrity"), toolText(bkDup).slice(0, 160));
+    fs.rmSync(bkPath, { force: true });
+    fs.rmSync(path.dirname(bkPath), { recursive: true, force: true });
 
     // Note: shared DB — docs from earlier in-process ingestion are visible.
     const listDocs = await client.callTool({ name: "rag_list_documents", arguments: {} });
@@ -465,6 +477,10 @@ async function main() {
     check("rag_search honours explain over MCP", explainJson.length >= 1 && explainJson[0].explain !== undefined, JSON.stringify(explainJson[0]).slice(0, 160));
     const noExplainMcp = await client.callTool({ name: "rag_search", arguments: { query: "github actions pipeline", top_k: 3 } });
     check("rag_search omits explain by default", JSON.parse(toolText(noExplainMcp))[0].explain === undefined);
+
+    // alpha blend must be schema-bounded over MCP.
+    const badAlphaMcp = await client.callTool({ name: "rag_search", arguments: { query: "thing", alpha: 1.5 } });
+    check("rag_search rejects alpha outside 0..1", /at most|max|between|invalid/i.test(toolText(badAlphaMcp)), toolText(badAlphaMcp).slice(0, 160));
 
     const ingest = await client.callTool({
       name: "rag_ingest_text",
@@ -995,7 +1011,121 @@ const codeChunked = chunkText("```ts\nconst a = 1;\n```\n\nplain paragraph after
   else process.env.RAG_VECTOR_CACHE_WARN_MB = savedWarn;
   invalidateVectorCache();
 
-  /* ================== 11. RESULTS ================== */
+  /* ================== 11. 2.8 HARDENING: EMBEDDER V2, ALPHA, RRF_K, BACKUP, DECAY, RESPONSIVENESS ================== */
+  console.log("\n=== 11. 2.8 Hardening ===");
+
+  // --- 11a. embedder v2 (word bi-grams) ---------------------------------------
+  const { tokenize } = await import("../rag/embedder.js");
+  const { modelName } = await import("../rag/embeddings.js");
+  check("local embedder reports the v2 model id (new vector space)", modelName() === "local-lexical-v2", modelName());
+  const bigramFeats = [...tokenize("alpha beta gamma")].filter((f) => f.startsWith("w2:"));
+  check("word bi-grams are part of the feature set", bigramFeats.includes("w2:alpha:beta") && bigramFeats.includes("w2:beta:gamma"), bigramFeats.join(" "));
+  check("bi-grams exist without stop words", [...tokenize("quick brown fox")].includes("w2:quick:brown"));
+  check("a stop word never closes a bi-gram", ![...tokenize("the quick fox")].includes("w2:the:quick") && ![...tokenize("the a an")].includes("w2:the:a"));
+
+  // --- 11b. alpha blend + RAG_RRF_K ------------------------------------------
+  await rag.ingestText("plethoric interstice of the gnarled root", "Vector-only probe");
+  await rag.ingestText("plethora conclude", "Keyword probe");
+  const kwHit = await rag.searchDocs("plethora conclude", 10, 0.001, undefined, undefined, 0);
+  check("alpha=0 finds the keyword hit", kwHit.some((h: { content: string }) => h.content.includes("plethora")), JSON.stringify(kwHit.map((h: { content: string }) => h.content)));
+  check("alpha=0 drops the vector-only hit", kwHit.every((h: { content: string }) => !h.content.includes("interstice")), JSON.stringify(kwHit));
+  const vecHit = await rag.searchDocs("plethora conclude", 10, 0.001, undefined, undefined, 1);
+  check("alpha=1 surfaces the vector-only hit", vecHit.some((h: { content: string }) => h.content.includes("interstice")), JSON.stringify(vecHit.map((h: { content: string }) => h.content)));
+  const blended = await rag.searchDocs("plethora conclude", 20, 0.001, undefined, true, 0.4);
+  const blendFormula = blended.every((h: { score: number; explain?: { vectorScore?: number; keywordScore?: number } }) => {
+    const v = h.explain?.vectorScore ?? 0;
+    const k = h.explain?.keywordScore ?? 0;
+    return Math.abs(h.score - (0.4 * v + 0.6 * k)) < 1e-6;
+  });
+  check("blend score is exactly alpha*cosine + (1-alpha)*BM25 on every hit", blended.length > 0 && blendFormula, JSON.stringify(blended.map((h: { score: number; explain?: { vectorScore?: number } }) => ({ s: h.score, v: h.explain?.vectorScore }))));
+  check("alpha validation in the engine", await rejects(() => rag.searchDocs("x", 3, 0.001, undefined, false, 1.5), /between 0 and 1/i));
+
+  const ok60 = await rag.searchDocs("plethora conclude", 20, 0.001, undefined, true);
+  const dual60 = ok60.find((h: { explain?: { vectorRank?: number; keywordRank?: number; rrfScore?: number } }) => h.explain?.vectorRank !== undefined && h.explain?.keywordRank !== undefined);
+  check("a dual-leg hit exists to verify RRF math", dual60 !== undefined, JSON.stringify(ok60[0]));
+  if (dual60) {
+    const ex = dual60.explain as { vectorRank: number; keywordRank: number; rrfScore: number };
+    const expected60 = 1 / (60 + ex.vectorRank + 1) + 1 / (60 + ex.keywordRank + 1);
+    check("rrfScore matches the documented closed form (k=60)", Math.abs(ex.rrfScore - expected60) < 1e-5, `${ex.rrfScore} vs ${expected60}`);
+  }
+  const savedK = process.env.RAG_RRF_K;
+  process.env.RAG_RRF_K = "10";
+  const ok10 = await rag.searchDocs("plethora conclude", 20, 0.001, undefined, true);
+  const dual10 = ok10.find((h: { explain?: { vectorRank?: number; keywordRank?: number; rrfScore?: number } }) => h.explain?.vectorRank !== undefined && h.explain?.keywordRank !== undefined);
+  check("RAG_RRF_K is honoured at call time", dual10 !== undefined && Math.abs((dual10.explain as { rrfScore: number }).rrfScore - (1 / (10 + (dual10.explain as { vectorRank: number }).vectorRank + 1) + 1 / (10 + (dual10.explain as { keywordRank: number }).keywordRank + 1))) < 1e-5, JSON.stringify(dual10?.explain));
+  if (savedK === undefined) delete process.env.RAG_RRF_K;
+  else process.env.RAG_RRF_K = savedK;
+
+  // --- 11c. backup / restore / integrity -------------------------------------
+  const { backupStore, restoreStore, integrityCheck, getDB: refreshDB } = await import("../db/database.js");
+  const bkPath = path.join(TEST_DB, "backups", "snapshot-11c.sqlite");
+  const beforeBackup = (refreshDB().prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
+  const bkRep = backupStore(bkPath);
+  check("backup writes a consistent snapshot with integrity", fs.existsSync(bkPath) && bkRep.documents === beforeBackup && bkRep.integrity.ok === true, JSON.stringify(bkRep).slice(0, 160));
+  check("backup refuses to overwrite an existing file", await rejects(() => backupStore(bkPath)));
+  await rag.ingestText("restore victim payload with unique labelling quirks", "Restore victim");
+  const afterBackup = (refreshDB().prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
+  check("store mutated after the backup was taken", afterBackup === beforeBackup + 1, `${beforeBackup} -> ${afterBackup}`);
+  const restRep = restoreStore(bkPath);
+  rag.invalidateVectorCache();
+  const restoredCount = (refreshDB().prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
+  check("restore reverts the store and re-verifies integrity", restRep.documents === beforeBackup && restRep.integrity.ok === true && restoredCount === beforeBackup, JSON.stringify(restRep).slice(0, 160));
+  const lostDoc = await rag.searchDocs("restore victim", 5);
+  check("restored store no longer finds the lost document", lostDoc.every((h: { content: string }) => !h.content.includes("restore victim")), JSON.stringify(lostDoc.map((h: { content: string }) => h.content)));
+  const junk = path.join(TEST_DB, "junk-file.sqlite");
+  fs.writeFileSync(junk, "this is not a sqlite database");
+  const junkRep = integrityCheck(junk);
+  check("integrity check flags a corrupt file", junkRep.ok === false, JSON.stringify(junkRep));
+  fs.rmSync(path.dirname(bkPath), { recursive: true, force: true });
+  fs.rmSync(junk, { force: true });
+
+  // --- 11d. memory decay anchored on last activity ----------------------------
+  const stale = await mem.remember({ content: "decay probe: dormant low-value fact alpha", importance: 0.1, type: "fact", tags: ["decay-test"] });
+  const brushed = await mem.remember({ content: "decay probe: revisited low-value fact beta", importance: 0.1, type: "fact", tags: ["decay-test"] });
+  const savedPrune = process.env.RAG_PRUNE;
+  const savedImp = process.env.RAG_PRUNE_IMPORTANCE;
+  const savedAge = process.env.RAG_PRUNE_AGE_DAYS;
+  const savedDedup = process.env.RAG_DEDUP_MAX_VECTORS;
+  process.env.RAG_PRUNE = "1";
+  process.env.RAG_PRUNE_IMPORTANCE = "0.5";
+  process.env.RAG_PRUNE_AGE_DAYS = "100";
+  process.env.RAG_DEDUP_MAX_VECTORS = "100000";
+  const day = 86_400_000;
+  const decayNow = Date.now();
+  const liveMem = refreshDB();
+  liveMem.prepare("UPDATE memories SET created_at = ?, updated_at = ? WHERE id = ?").run(decayNow - 200 * day, decayNow - 200 * day, stale.id);
+  liveMem.prepare("UPDATE memories SET created_at = ?, updated_at = ? WHERE id = ?").run(decayNow - 200 * day, decayNow - 200 * day, brushed.id);
+  liveMem.prepare("UPDATE memories SET last_recalled = ? WHERE id = ?").run(decayNow - 5 * day, brushed.id);
+  const decRep = await mem.consolidate();
+  check("decay prunes a dormant memory older than the cutoff", mem.getMemory(stale.id) === null, JSON.stringify(decRep).slice(0, 160));
+  check("decay keeps a memory recalled within the window", mem.getMemory(brushed.id) !== null);
+  if (savedPrune === undefined) delete process.env.RAG_PRUNE;
+  else process.env.RAG_PRUNE = savedPrune;
+  if (savedImp === undefined) delete process.env.RAG_PRUNE_IMPORTANCE;
+  else process.env.RAG_PRUNE_IMPORTANCE = savedImp;
+  if (savedAge === undefined) delete process.env.RAG_PRUNE_AGE_DAYS;
+  else process.env.RAG_PRUNE_AGE_DAYS = savedAge;
+  if (savedDedup === undefined) delete process.env.RAG_DEDUP_MAX_VECTORS;
+  else process.env.RAG_DEDUP_MAX_VECTORS = savedDedup;
+
+  // --- 11e. ingest stays responsive (anti-stall) ------------------------------
+  const realSI: typeof setImmediate = globalThis.setImmediate.bind(globalThis);
+  let immediateCalls = 0;
+  const patchSI = ((cb: (...args: unknown[]) => void, ...rest: unknown[]) => {
+    immediateCalls++;
+    return realSI(cb, ...(rest as unknown[]));
+  }) as unknown as typeof setImmediate;
+  (globalThis as unknown as { setImmediate: typeof setImmediate }).setImmediate = patchSI;
+  try {
+    const filler = Array(12).fill("The expedition surveyed the salt flats at dawn with rationed water and a single broken compass.").join(" ");
+    const bigDoc = Array.from({ length: 140 }, (_, i) => `Section ${i}: ${filler}`).join("\n\n");
+    await rag.ingestText(bigDoc, "Responsiveness probe");
+  } finally {
+    (globalThis as unknown as { setImmediate: typeof setImmediate }).setImmediate = realSI;
+  }
+  check("ingest yields to the event loop during embedding", immediateCalls >= 8, `immediateCalls=${immediateCalls}`);
+
+  /* ================== 12. RESULTS ================== */
   console.log("\n=== RESULTS ===");
   console.log(`  Total:  ${passed + failed}`);
   console.log(`  Passed: ${passed}`);

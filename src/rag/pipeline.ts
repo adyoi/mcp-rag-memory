@@ -356,10 +356,11 @@ export async function searchDocs(
   topK = 10,
   minScore = 0.08,
   filters?: SearchChunkFilters,
-  explain = false
+  explain = false,
+  alpha?: number
 ): Promise<SearchHit[]> {
   const q = await embedText(query);
-  return searchChunks(q, { queryText: query, topK, minScore, filters, explain });
+  return searchChunks(q, { queryText: query, topK, minScore, filters, explain, alpha });
 }
 
 export async function retrieve(

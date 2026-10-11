@@ -4,7 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as path from "path";
 import { createRequire } from "node:module";
-import { STORAGE_DIR, closeDB, getEmbedState } from "../db/database.js";
+import { STORAGE_DIR, closeDB, getEmbedState, storeHealthSummary } from "../db/database.js";
+import { backupStore } from "../db/database.js";
 import { embeddingInfo } from "../rag/embeddings.js";
 import { reindex } from "../rag/reindex.js";
 import {
@@ -86,6 +87,10 @@ server.registerTool(
           text: JSON.stringify(
             {
               dbDir: STORAGE_DIR,
+              db: {
+                path: path.join(STORAGE_DIR, "rag.sqlite"),
+                health: storeHealthSummary(),
+              },
               embedding: embeddingInfo(),
               storeState: state === "" || state === "ready" ? "ready" : state,
               ...(state !== "" && state !== "ready"
@@ -133,6 +138,28 @@ server.registerTool(
         if (p.total > 0) process.stderr.write(`reindex ${p.phase}: ${p.done}/${p.total}\n`);
       },
     });
+    return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "rag_backup",
+  {
+    description:
+      "Snapshot the store to a consistent SQLite file (VACUUM INTO, safe under WAL) and report its integrity. " +
+      "Refuses to overwrite an existing file. Restore is done offline via 'cli restore <file>' while the server is stopped.",
+    inputSchema: {
+      target_path: z
+        .string()
+        .min(1)
+        .max(MAX_PATH)
+        .optional()
+        .describe("Absolute target path; defaults to <RAG_DB_DIR>/backups/rag-backup-<timestamp>.sqlite"),
+    },
+  },
+  async (args: { target_path?: string }) => {
+    const target = args.target_path ?? path.join(STORAGE_DIR, "backups", `rag-backup-${Date.now()}.sqlite`);
+    const res = backupStore(target);
     return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
   }
 );
@@ -199,7 +226,11 @@ server.registerTool(
 server.registerTool(
   "rag_search",
   {
-    description: "Hybrid semantic + keyword search over stored documents. Returns chunks ranked by relevance with scores. Set explain to see per-leg scores (vector cosine, keyword BM25, RRF contribution) and diagnose ranking.",
+    description:
+      "Hybrid semantic + keyword search over stored documents. Returns chunks ranked by relevance with scores. " +
+      "Set explain to see per-leg scores (vector cosine, keyword BM25, RRF contribution) and diagnose ranking. " +
+      "Optional alpha (0..1) tips the balance: 0 = keyword-only, 1 = vector-only, in between blends " +
+      "'alpha * cosine + (1-alpha) * BM25'. Default uses Reciprocal Rank Fusion.",
     inputSchema: {
       query: z.string().min(1).max(MAX_QUERY),
       top_k: z.number().int().min(1).max(50).optional().default(10),
@@ -207,9 +238,10 @@ server.registerTool(
       doc_id: z.string().max(MAX_ID).optional().describe("Only search within this document"),
       source: z.string().max(MAX_ID).optional().describe("Only search documents with this source (e.g. 'opencode-db', 'session-log')"),
       explain: z.boolean().optional().default(false).describe("Include per-leg vector/keyword/RRF scores on every hit"),
+      alpha: z.number().min(0).max(1).optional().describe("Directional blend 0..1 (0 = keyword, 1 = vector); omit for default RRF hybrid"),
     },
   },
-  async (args: { query: string; top_k?: number; min_score?: number; doc_id?: string; source?: string; explain?: boolean }) => {
+  async (args: { query: string; top_k?: number; min_score?: number; doc_id?: string; source?: string; explain?: boolean; alpha?: number }) => {
     const hits = await searchDocs(
       args.query,
       args.top_k ?? 10,
@@ -218,7 +250,8 @@ server.registerTool(
         docId: args.doc_id,
         source: args.source,
       },
-      args.explain ?? false
+      args.explain ?? false,
+      args.alpha
     );
     return {
       content: [{ type: "text", text: JSON.stringify(hits, null, 2) }],

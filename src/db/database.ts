@@ -185,6 +185,161 @@ export function closeDB() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Integrity, backup & restore                                         */
+/* ------------------------------------------------------------------ */
+
+export interface IntegrityReport {
+  ok: boolean;
+  errorCount: number;
+  firstError?: string;
+}
+
+/**
+ * Surface-level check for one page of corruption (the default pass) on either
+ * the live store or a standalone file. Reading the store while another process
+ * writes is safe here: integrity_check takes its own snapshot.
+ */
+export function integrityCheck(targetPath?: string): IntegrityReport {
+  // Opening a corrupt/foreign file can throw synchronously — that is exactly the
+  // case this helper exists to classify, so swallow it and report the failure.
+  let own: DatabaseSync;
+  try {
+    own = targetPath ? new DatabaseSync(path.resolve(targetPath), { readOnly: true }) : getDB();
+  } catch (e) {
+    return { ok: false, errorCount: 1, firstError: String((e as Error).message ?? e) };
+  }
+  let rows: Array<Record<string, unknown>>;
+  try {
+    rows = own.prepare("PRAGMA integrity_check").all() as Array<Record<string, unknown>>;
+  } catch (e) {
+    return { ok: false, errorCount: 1, firstError: String((e as Error).message ?? e) };
+  } finally {
+    if (targetPath) own.close();
+  }
+  const errors = rows
+    .map((r) => String(r.integrity_check ?? Object.values(r)[0] ?? ""))
+    .filter((t) => t !== "ok");
+  if (errors.length === 0) return { ok: true, errorCount: 0 };
+  return { ok: false, errorCount: errors.length, firstError: errors[0] };
+}
+
+export interface StoreCounts {
+  documents: number;
+  chunks: number;
+  memories: number;
+}
+
+export function storeCounts(db: DatabaseSync = getDB()): StoreCounts {
+  const one = (sql: string): number => Number((db.prepare(sql).get() as { c: number }).c);
+  return {
+    documents: one("SELECT COUNT(*) AS c FROM documents"),
+    chunks: one("SELECT COUNT(*) AS c FROM chunks"),
+    memories: one("SELECT COUNT(*) AS c FROM memories"),
+  };
+}
+
+export interface BackupReport extends StoreCounts {
+  path: string;
+  bytes: number;
+  integrity: IntegrityReport;
+}
+
+/** Quote a path as a SQLite string literal (VACUUM INTO takes a literal, not a bound param). */
+function sqliteLiteral(value: string): string {
+  return "'" + value.replace(/'/g, "''") + "'";
+}
+
+/**
+ * Consistent snapshot of the live store via `VACUUM INTO`. Unlike a raw file
+ * copy this works regardless of WAL state and never writes into the live DB.
+ * SQLite refuses to overwrite an existing target, which doubles as a built-in
+ * no-clobber guard for the tool surface.
+ */
+export function backupStore(target: string): BackupReport {
+  const abs = path.resolve(target);
+  if (abs.toLowerCase() === DB_PATH.toLowerCase()) {
+    throw new Error("Backup target must not be the live store file");
+  }
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  getDB().exec(`VACUUM INTO ${sqliteLiteral(abs)}`);
+  const counts = storeCounts();
+  return {
+    path: abs,
+    bytes: fs.statSync(abs).size,
+    documents: counts.documents,
+    chunks: counts.chunks,
+    memories: counts.memories,
+    integrity: integrityCheck(abs),
+  };
+}
+
+export interface RestoreReport extends StoreCounts {
+  path: string;
+  restoredFrom: string;
+  integrity: IntegrityReport;
+}
+
+/**
+ * Replace the live store with a backup file, offline (run while no server is
+ * using the store). The current WAL journal is checkpointed and then discarded
+ * together with -shm before the copy, so a stale WAL belonging to the replaced
+ * database can never bleed into the restored one. The store is reopened and
+ * re-verified before returning; on failure it is left closed so a subsequent
+ * command surfaces the problem instead of running against a half state.
+ */
+export function restoreStore(source: string): RestoreReport {
+  const src = path.resolve(source);
+  if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+    throw new Error(`Backup file not found: ${src}`);
+  }
+  if (src.toLowerCase() === DB_PATH.toLowerCase()) {
+    throw new Error("Source is the live store file itself; pick a backup copy");
+  }
+  try {
+    getDB().exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  } catch {
+    /* a closed or locked store has nothing to checkpoint */
+  }
+  closeDB();
+  try {
+    // -wal/-shm belong to the database being replaced; leaving them around lets
+    // SQLite replay a journal that has nothing to do with the restored file.
+    fs.rmSync(`${DB_PATH}-wal`, { force: true });
+    fs.rmSync(`${DB_PATH}-shm`, { force: true });
+    fs.copyFileSync(src, DB_PATH);
+    const db = getDB();
+    const integrity = integrityCheck();
+    const counts = storeCounts(db);
+    return { path: DB_PATH, restoredFrom: src, ...counts, integrity };
+  } catch (e) {
+    throw new Error(
+      `Restore failed (the store is closed; run any command to reopen it): ${e instanceof Error ? e.message : String(e)}`
+    );
+  }
+}
+
+/** Health lamp for system_stats: runs integrity_check only on stores small enough that it cannot stall the server. */
+export function storeHealthSummary(): {
+  status: "ok" | "corrupt" | "deferred";
+  errorCount?: number;
+  firstError?: string;
+  reason?: string;
+} {
+  const counts = storeCounts();
+  const rows = counts.documents + counts.chunks + counts.memories;
+  const max = 100_000;
+  if (rows > max) {
+    return {
+      status: "deferred",
+      reason: `store has ${rows} rows; run 'rag_backup' or 'cli backup' to verify integrity`,
+    };
+  }
+  const rep = integrityCheck();
+  if (rep.ok) return { status: "ok", errorCount: 0 };
+  return { status: "corrupt", errorCount: rep.errorCount, firstError: rep.firstError };
+}
+
+/* ------------------------------------------------------------------ */
 /* Embedding dimension metadata                                        */
 /* ------------------------------------------------------------------ */
 

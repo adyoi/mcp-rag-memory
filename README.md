@@ -18,7 +18,7 @@ context **across sessions**.
 - **Context Management** — `remember` facts/decisions/preferences, `recall` them later (score-decayed by staleness), rate by importance, consolidate duplicates, filter by type/tag.
 - **Zero external APIs by default** — local hashing-embedder (1024-dim), built-in `node:sqlite`. Works fully offline. Optional `EMBEDDING_PROVIDER=transformers` for a higher-quality ONNX model.
 - **Safe ingestion** — content-hash deduplication, file size guard (`RAG_MAX_FILE_MB`) and an opt-in path allowlist (`RAG_ALLOWED_DIRS`).
-- **MCP server** — runs on stdio, 20 tools.
+- **MCP server** — runs on stdio, 21 tools.
 
 ## Quick start
 
@@ -27,7 +27,7 @@ Requires **Node.js ≥ 22.12** (for `node:sqlite` read-only handles and
 
 ```bash
 npm install
-npm test                 # 160 checks: unit + MCP round-trip via SDK client
+npm test                 # 238 checks: unit + MCP round-trip via SDK client
 npm run lint             # oxlint
 npm run typecheck        # src + scripts + .opencode/plugin
 npm run build            # compile to dist/
@@ -190,16 +190,17 @@ the global config to apply to every project.
 
 Restart opencode after any config change.
 
-## MCP tools (20)
+## MCP tools (21)
 
 | Group | Tool | Purpose |
 |-------|------|---------|
-| System | `system_stats` | DB dir, embedding backend (incl. what the vector leg measures), store state, doc/memory counts |
+| System | `system_stats` | DB dir, embedding backend (incl. what the vector leg measures), store state, DB integrity, doc/memory counts |
 | Maintenance | `rag_reindex` | Re-embed every stored vector for the current model, migrating the store in place |
+| | `rag_backup` | Snapshot the store to a consistent SQLite file (VACUUM INTO — safe under WAL) and report its integrity; refuses to overwrite |
 | RAG ingest | `rag_ingest_text` | Store text as a knowledge document (dedup-aware) |
 | | `rag_ingest_file` | Store a file (`content_type` auto-detected) |
 | | `rag_ingest_dir` | Recursively ingest source files |
-| RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores; `explain: true` adds per-leg scores |
+| RAG query | `rag_search` | Hybrid (BM25 + vector) search, ranked chunks + scores; `explain: true` adds per-leg scores, `alpha` tips the blend (0 = keyword-only, 1 = vector-only) |
 | | `rag_retrieve` | Ready-to-inject context block with token count |
 | RAG docs | `rag_list_documents`, `rag_document_stats` | Inventory (`rag_list_documents` is paginated: `limit` 1–1000, `offset`) |
 | | `rag_delete_document` | Remove a document + chunks + FTS rows |
@@ -306,9 +307,15 @@ the whole store is rewritten from text, so resuming is identical to starting ove
 Re-running is always safe: embedding is deterministic per model, so `reindex` is
 idempotent. On an empty store it is a no-op that just records the model.
 
+> **Upgrading the embedder version.** Bumping the bundled local embedder (e.g. the
+> 2.8 word-bi-gram `local-lexical-v2`) changes its model id, so an existing store is
+> treated as a different vector space and refuses to search until migrated. After
+> upgrading, run `npm run cli -- reindex` (or the `rag_reindex` tool) **once** — it
+> re-embeds in place. This is the same guard as changing `EMBEDDING_MODEL`, on purpose.
+
 ## Custom slash commands
 
-The 20 MCP tools are called by the AI automatically — but you can also
+The 21 MCP tools are called by the AI automatically — but you can also
 trigger them directly with custom commands. Sources (same name, project
 wins):
 
@@ -336,12 +343,15 @@ npm run cli -- ingest-dir ./src/rag
 npm run cli -- search "vector similarity"
 npm run cli -- search "auth bug" --source opencode-db   # filter by source or doc-id
 npm run cli -- search "auth bug" --explain              # per-leg vector/keyword/RRF scores
+npm run cli -- search "client" --alpha 0               # keyword-only blend (0 = keyword, 1 = vector, default = RRF)
 npm run cli -- docs --limit 20 --offset 20            # paginated inventory
 npm run cli -- mem-context "database"
 npm run cli -- sessions              # list recent opencode sessions
 npm run cli -- sync-session ses_123  # ingest one session's inputs
 npm run cli -- sync-latest           # ingest the most recent session
 npm run cli -- reindex --batch 32    # re-embed all vectors for the current model
+npm run cli -- backup backups/v1.sqlite   # consistent snapshot (VACUUM INTO)
+npm run cli -- restore backups/v1.sqlite  # replace the store from a backup (stop the server first)
 npm run clean-db -- --force          # wipe ALL documents + memories (destructive)
 ```
 
@@ -420,7 +430,7 @@ This matters more than it sounds, so the server states it explicitly in
 
 | Provider | `vectorLeg` | Meaning |
 |---|---|---|
-| `local` (default) | `lexical` | Hashes character 1/2/3-grams into 1024 buckets. Scores **lexical and sub-word overlap**, not meaning. |
+| `local` (default) | `lexical` | Hashes character 1/2/3-grams **plus word bi-grams** into 1024 buckets. Scores **lexical and sub-word overlap** (word order now matters a little), not meaning. |
 | `transformers` | `semantic` | Real sentence embeddings from `EMBEDDING_MODEL`. Captures meaning. |
 
 Consequence for the default: `"cara fix login"` and `"masalah autentikasi"`
@@ -440,6 +450,22 @@ EMBEDDING_PROVIDER=transformers EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2 npm run 
 
 `reindex` rewrites every stored vector for the new model. See
 [Changing the embedding model](#changing-the-embedding-model).
+
+### Scoring & `min_score` calibration
+
+Two ordering modes, and `min_score` means something different in each:
+
+| Mode | How hits are ordered | What `score` / `min_score` is |
+|---|---|---|
+| **Default (RRF)** | Reciprocal-rank fusion over the vector and keyword rankings | The fused RRF contribution (`rrfScore`), a small number — top hits are typically `0.03`–`0.08`, so the practical floor is ~`0.01`–`0.03`. |
+| **`alpha` blend** | `score = alpha·vectorScore + (1−alpha)·keywordScore` | A real 0..1 relevance value — `alpha = 0` is keyword-only, `1` is vector-only, in between is a weighted average. `0.1`–`0.3` is a sensible default threshold. |
+
+- The RRF constant is `RAG_RRF_K` (default `60`); it is read **at call time**, so
+  raise it to widen the rank spread (harder to distinguish hits) or lower it to
+  sharpen it. With `alpha`, `min_score` runs against the blended value instead.
+- The keyword leg always reports a 0..1 normalised BM25 (`keywordScore`); the
+  vector leg reports cosine in `-1..1` (`vectorScore`). `explain` shows exactly
+  what fed the final number — see the table below.
 
 ### Debugging a bad search
 
@@ -471,17 +497,17 @@ per-leg diagnostics to every hit:
 
 ```
 src/
-├── db/database.ts          node:sqlite (documents, chunks, memories, chunks_fts, meta)
+├── db/database.ts          node:sqlite (documents, chunks, memories, chunks_fts, meta) + integrity/backup/restore
 ├── rag/
-│   ├── embedder.ts         local hashing embedder (1024-d, FNV-1a, n-grams)
+│   ├── embedder.ts         local hashing embedder (1024-d, FNV-1a, word + char n-grams)
 │   ├── embeddings.ts       provider layer: local | transformers (optional dep)
 │   ├── chunker.ts          paragraph/code-aware chunking with overlap
-│   ├── vector-search.ts    vector cache + FTS5 BM25 + RRF hybrid scoring
+│   ├── vector-search.ts    vector cache + FTS5 BM25 + RRF hybrid scoring (alpha blend, RAG_RRF_K)
 │   └── pipeline.ts         async ingest/search/retrieve, dedup, guards, doc mgmt
 ├── session/transcript.ts   read opencode sessions (global+local DB), ingest inputs
-├── memory/memory.ts        remember / recall / consolidate + decay + prune
-├── mcp/rag-server.ts       MCP server (20 tools, stdio, npm bin)
-├── cli.ts                  CLI playground (incl. sync-session / sync-latest / sync-logs)
+├── memory/memory.ts        remember / recall / consolidate + decay + prune (last-activity anchored)
+├── mcp/rag-server.ts       MCP server (21 tools, stdio, npm bin)
+├── cli.ts                  CLI playground (incl. sync-session / sync-latest / backup / restore)
 └── test/test-all.ts        full test suite (unit + MCP round-trip)
 ```
 
@@ -497,6 +523,7 @@ Data lives in `.rag-data/rag.sqlite` (git-ignored).
 | `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | Transformers model name |
 | `RAG_MAX_FILE_MB` | `10` | Reject files larger than this |
 | `RAG_ALLOWED_DIRS` | *(unset = anywhere)* | Semicolon/pipe/comma-separated allowed ingest roots |
+| `RAG_RRF_K` | `60` | RRF constant for default hybrid ranking (read at call time) |
 | `RAG_MEMORY_HALF_LIFE_DAYS` | `14` | Recall score decay half-life |
 | `RAG_DEDUP_MAX_VECTORS` | `500` | Above this many memories `consolidate` skips near-duplicate detection and reports `skippedDedup`. Raise it on a dedicated server (the pass is O(n²)) |
 | `RAG_VECTOR_CACHE_WARN_MB` | `256` | Warn when the in-memory vector cache exceeds this size |
@@ -624,7 +651,7 @@ can slow down the TUI. This repo ships exactly one plugin
 `npx … sync-latest` per 60s, spawned detached with `stdio: "ignore"` and
 `shell: false`. If it still costs too much, set `RAG_AUTOSYNC=0` (keeps the
 plugin, disables the auto-sync) or drop the `plugin` entry from
-`opencode.json` — the MCP server and its 20 tools keep working, you just have
+`opencode.json` — the MCP server and its 21 tools keep working, you just have
 to call `rag_sync_session` yourself.
 
 ---

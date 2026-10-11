@@ -35,7 +35,7 @@ export function expectedDim(): number {
 }
 
 export function modelName(): string {
-  return EMBEDDING_PROVIDER === "local" ? "local-hash-1024" : EMBEDDING_MODEL;
+  return EMBEDDING_PROVIDER === "local" ? "local-lexical-v2" : EMBEDDING_MODEL;
 }
 
 /**
@@ -56,7 +56,7 @@ export function vectorLegKind(): "lexical" | "semantic" {
 
 export function vectorLegNote(): string {
   return EMBEDDING_PROVIDER === "local"
-    ? "Local hashing embedder: the vector leg scores lexical/sub-word overlap, not meaning. " +
+    ? "Local hashing embedder (word + char n-grams): the vector leg scores lexical/sub-word overlap, not meaning. " +
       "Synonym-only queries depend on the FTS5 trigram leg. Set EMBEDDING_PROVIDER=transformers " +
       "(npm i @huggingface/transformers) then run 'rag_reindex' for true semantic recall."
     : `Semantic embeddings from ${EMBEDDING_MODEL}; the vector leg captures meaning, not just overlap.`;

@@ -9,7 +9,7 @@
  *   ingest-text  <title> <file|->              Ingest text (from file or stdin)
  *   ingest-file  <path>                        Ingest a single file
  *   ingest-dir   <dir>                         Ingest a directory
- *   search       <query>                       Semantic search over documents
+ *   search       <query> [--top-k N] [--min-score S] [--explain] [--alpha A] [--doc-id ID] [--source S]
  *   retrieve     <query>                       Retrieve context block
  *   docs                                      List documents
  *   doc-stats                                 Document stats
@@ -25,6 +25,8 @@
  *   mem-context  <topic>
  *   stats                                       Everything
  *   reindex    [--batch N]                      Re-embed all vectors for the current model
+ *   backup     [path]                          Snapshot the store to a consistent SQLite file
+ *   restore    <path>                          Replace the store from a backup (offline — stop the server first)
  *   sessions                                    List opencode sessions (recent first)
  *   sync-session <sessionId> [--limit N]        Ingest a session's user inputs to RAG
  *   sync-latest   [--limit N] [--dir PATH]      Ingest the most recent session (workspace-aware)
@@ -36,8 +38,9 @@ import { ingestText, ingestFile, ingestDirectory, searchDocs, retrieve, listDocu
 import { remember, recall, listMemories, getMemory, updateMemory, forget, consolidate, memoryStats, contextPrompt, MEMORY_TYPES } from "./memory/memory.js";
 import { ingestSession, ingestJsonlFile, ingestLogDir, ingestLatest, listOpenCodeSessions } from "./session/transcript.js";
 import { reindex } from "./rag/reindex.js";
-import { closeDB, STORAGE_DIR } from "./db/database.js";
+import { closeDB, STORAGE_DIR, backupStore, restoreStore } from "./db/database.js";
 import * as fs from "fs";
+import * as path from "path";
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -51,7 +54,7 @@ async function main() {
 }
 
 function helpText(): string {
-  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats|reindex|sessions|sync-session|sync-latest|sync-logs|ingest-jsonl`;
+  return `Commands: ingest-text|ingest-file|ingest-dir|search|retrieve|docs|doc-stats|rm-doc|remember|recall|memory-list|memory-get|memory-update|forget|consolidate|memory-stats|mem-context|stats|reindex|backup|restore|sessions|sync-session|sync-latest|sync-logs|ingest-jsonl`;
 }
 
 function assertMemoryType(type: string): asserts type is (typeof MEMORY_TYPES)[number] {
@@ -85,6 +88,10 @@ async function run(cmd: string, args: string[]) {
         break;
       case "search": {
         const parsed = parseOpts(args);
+        const alpha = toNum(parsed.opts.alpha, undefined);
+        if (alpha !== undefined && (alpha < 0 || alpha > 1)) {
+          throw new Error("--alpha must be between 0 and 1");
+        }
         out = await searchDocs(
           queryArg(parsed.positional),
           toNum(parsed.opts["top-k"], 10),
@@ -93,7 +100,8 @@ async function run(cmd: string, args: string[]) {
             docId: parsed.opts["doc-id"],
             source: parsed.opts.source,
           },
-          parsed.opts.explain !== undefined
+          parsed.opts.explain !== undefined,
+          alpha
         );
         break;
       }
@@ -201,6 +209,14 @@ async function run(cmd: string, args: string[]) {
         process.stderr.write("\n");
         break;
       }
+      case "backup": {
+        const target = args[0] ?? path.join(STORAGE_DIR, "backups", `rag-backup-${Date.now()}.sqlite`);
+        out = backupStore(target);
+        break;
+      }
+      case "restore":
+        out = restoreStore(requireArg(args[0], "restore <backup-file>"));
+        break;
       case "sessions": {
         const parsed = parseOpts(args);
         out = listOpenCodeSessions(toNum(parsed.opts.limit, 15) ?? 15, { directory: parsed.opts.dir });

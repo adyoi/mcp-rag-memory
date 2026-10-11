@@ -55,8 +55,17 @@ function searchMode(): SearchMode {
   return raw === "vector" || raw === "keyword" ? raw : "hybrid";
 }
 
-const RRF_K = 60;
 const LIST_CAP = 60;
+
+/**
+ * Read the RRF constant at call time, not frozen at import: a store can tune the
+ * fusion aggressiveness (`RAG_RRF_K`) without a rebuild. Larger k flattens the
+ * rank contribution (more fair across legs), smaller k amplifies top ranks.
+ */
+function rrfK(): number {
+  const raw = Number(process.env.RAG_RRF_K);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+}
 
 /* In-memory vector cache — invalidated on local writes and whenever another
  * process commits to the shared store (CLI, auto-save plugin, second server). */
@@ -258,11 +267,11 @@ function quoteFtsQuery(tokens: string[]): string {
 }
 
 /** Reciprocal-rank fusion over multiple ranked lists of {key}. */
-function rrfMerge(lists: Array<Array<{ key: string }>>): Map<string, number> {
+function rrfMerge(lists: Array<Array<{ key: string }>>, k: number): Map<string, number> {
   const scores = new Map<string, number>();
   for (const list of lists) {
     list.forEach((item, rank) => {
-      scores.set(item.key, (scores.get(item.key) ?? 0) + 1 / (RRF_K + rank + 1));
+      scores.set(item.key, (scores.get(item.key) ?? 0) + 1 / (k + rank + 1));
     });
   }
   return scores;
@@ -279,6 +288,13 @@ export interface SearchChunkOptions {
   filters?: SearchChunkFilters;
   /** Attach per-leg scores to every hit. Costs nothing extra, but only populated on request. */
   explain?: boolean;
+  /**
+   * Directional blend 0..1 for the hybrid mode (ignored under SEARCH_MODE=vector|keyword).
+   * When set, the reported score and the ordering come from
+   *   alpha * cosine + (1 - alpha) * normalised BM25
+   * instead of RRF; per-leg values stay visible via `explain`. Undefined = RRF (default).
+   */
+  alpha?: number;
 }
 
 /**
@@ -290,9 +306,12 @@ export interface SearchChunkOptions {
  * means the same thing in every mode (RRF only decides the order).
  */
 export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): SearchHit[] {
-  const { queryText = "", topK, minScore, filters, explain = false } = opts;
+  const { queryText = "", topK, minScore, filters, explain = false, alpha } = opts;
   const db = getDB();
   const mode = searchMode();
+  if (alpha !== undefined && (alpha < 0 || alpha > 1)) {
+    throw new Error(`alpha must be between 0 and 1, got ${alpha}`);
+  }
 
   // Resolve the doc filter BEFORE ranking so unfiltered chunks can never
   // out-rank a filtered one and squeeze it out of the top-K. Document ids, not
@@ -354,15 +373,43 @@ export function searchChunks(queryVec: Float64Array, opts: SearchChunkOptions): 
     ordered = vectorHits.slice(0, topK).map((h) => h.key);
   } else if (mode === "keyword") {
     ordered = kwHits.slice(0, topK).map((h) => h.key);
+  } else if (alpha !== undefined) {
+    // Directional blend: an explicit alpha replaces RRF for both the score and
+    // the ordering. Absent legs contribute 0 so a keyword-heavy blend really is
+    // keyword-heavy and a vector-only hit cannot coast on the other leg.
+    const k = rrfK();
+    const blended = new Map<string, number>();
+    const seen = new Set<string>();
+    for (const h of vectorHits) {
+      seen.add(h.key);
+      blended.set(h.key, alpha * h.score + (1 - alpha) * (bm25Norm.get(h.key) ?? 0));
+    }
+    for (const h of kwHits) {
+      if (seen.has(h.key)) continue;
+      blended.set(h.key, alpha * (vectorScore.get(h.key) ?? 0) + (1 - alpha) * (bm25Norm.get(h.key) ?? 0));
+    }
+    ordered = [...blended.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topK)
+      .map(([key]) => key);
+    // Kept for `explain` parity: rrfScore still describes each leg's fused
+    // strength, but the alpha blend (reported as `score`) decided the order.
+    rrf = rrfMerge([vectorHits, kwHits], k);
   } else {
-    rrf = rrfMerge([vectorHits, kwHits]);
+    rrf = rrfMerge([vectorHits, kwHits], rrfK());
     ordered = [...rrf.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key).slice(0, topK);
   }
 
   // Threshold on the final score, in every mode — not just on the vector leg.
-  const finalIds = ordered
-    .map((key) => ({ key, score: Math.max(vectorScore.get(key) ?? 0, kwScore.get(key) ?? 0) }))
-    .filter((f) => f.score >= minScore);
+  // Under alpha the score is the convex blend, so `min_score` means the same
+  // thing to the caller (0..1) no matter which leg carried the hit.
+  const finalIds = ordered.map((key) => ({
+    key,
+    score:
+      alpha !== undefined
+        ? alpha * (vectorScore.get(key) ?? 0) + (1 - alpha) * (bm25Norm.get(key) ?? 0)
+        : Math.max(vectorScore.get(key) ?? 0, kwScore.get(key) ?? 0),
+  })).filter((f) => f.score >= minScore);
 
   if (finalIds.length === 0) return [];
   const ids = finalIds.map((f) => f.key);
