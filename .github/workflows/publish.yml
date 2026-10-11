@@ -42,6 +42,9 @@ jobs:
           ID=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:${HOST}" | jq -er .value)
           PKG=$(jq -r '.name|@uri' package.json)
           echo "package=$PKG registry=$REG workflows=$GITHUB_WORKFLOW_REF"
+          echo "--- OIDC claims npm matches against ---"
+          echo "$ID" | python3 -c "import sys,base64,json; p=sys.stdin.read().split('.')[1]; p+='='*(-len(p)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p)),indent=2))" \
+            | jq '{sub, repository, repository_owner, workflow_ref, job_workflow_ref, environment, ref, aud}'
           curl -sS -o /tmp/exchange.json -w "exchange HTTP %{http_code}\n" \
             -H "Authorization: Bearer $ID" "$REG/-/npm/v1/oidc/token/exchange/package/$PKG" -d ""
           echo "--- body ---"; cat /tmp/exchange.json
