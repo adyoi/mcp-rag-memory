@@ -35,4 +35,7 @@ jobs:
         run: |
           echo "npm $(npm --version), node $(node --version)"
           echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}${NODE_AUTH_TOKEN:-no}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}${ACTIONS_ID_TOKEN_REQUEST_URL:-no}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-no}"
+          npm config get registry
           npm publish --provenance --access public
