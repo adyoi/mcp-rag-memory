@@ -1,8 +1,10 @@
-import { getDB, newId, nowMs, packVector, unpackVector } from "../db/database.js";
+import { getDB, newId, nowMs, packVector, unpackVector, STORAGE_DIR } from "../db/database.js";
 import { dotProduct } from "../rag/embedder.js";
 import { estimateTokensFromChars } from "../rag/chunker.js";
 import { embedText } from "../rag/embeddings.js";
 import { vectorSearch, invalidateVectorCache } from "../rag/vector-search.js";
+import * as fs from "fs";
+import * as path from "path";
 
 export const MEMORY_TYPES = [
   "fact",
@@ -248,10 +250,28 @@ export async function updateMemory(
 
 export function forget(id: string): { deleted: boolean } {
   const db = getDB();
+  const existing = getMemory(id);
   const res = db.prepare("DELETE FROM memories WHERE id = ?").run(id);
   const deleted = Number(res.changes) > 0;
   // A mistyped id used to force a full vector re-read on the next search.
   if (deleted) invalidateVectorCache();
+  // Backstop: a mistyped id or an accidental bulk delete used to be a hard
+  // loss. Mirror the deleted record into <STORAGE_DIR>/forget-bin/<id>.json
+  // so the row can be recovered from the filesystem. Best-effort — the
+  // SQLite delete has already committed, so a write failure here must not
+  // throw and reverse the deletion.
+  if (existing && deleted) {
+    try {
+      const bin = path.join(STORAGE_DIR, "forget-bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(
+        path.join(bin, `${existing.id}.json`),
+        JSON.stringify({ ...existing, deletedAt: nowMs() }, null, 2)
+      );
+    } catch {
+      /* best effort */
+    }
+  }
   return { deleted };
 }
 
