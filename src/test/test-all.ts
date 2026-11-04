@@ -48,7 +48,7 @@ async function main() {
   fs.rmSync(TEST_DB, { recursive: true, force: true });
 
   // Dynamic imports so the modules bind to TEST_DB.
-  const { getDB, packVector, unpackVector, DB_PATH } = await import("../db/database.js");
+  const { getDB, packVector, unpackVector, DB_PATH, STORAGE_DIR } = await import("../db/database.js");
   const { embed, cosineSimilarity, dotProduct, EMBED_DIM } = await import("../rag/embedder.js");
   const { chunkText } = await import("../rag/chunker.js");
   const rag = await import("../rag/pipeline.js");
@@ -342,6 +342,23 @@ async function main() {
   const del = mem.forget(m3.id);
   check("forget deletes memory", del.deleted === true);
   check("forget removed from list", mem.listMemories().length === 2);
+
+  // Tombstone backstop: forget must mirror the deleted record into
+  // <STORAGE_DIR>/forget-bin/<id>.json so a mistyped id or an accidental bulk
+  // delete is recoverable. The mirror is best-effort and must never throw.
+  const tombRec = await mem.remember({ content: "Tombstone probe for forget backstop.", type: "fact", importance: 0.42, tags: ["probe"] });
+  const tombDel = mem.forget(tombRec.id);
+  const tombFile = path.join(STORAGE_DIR, "forget-bin", `${tombRec.id}.json`);
+  check("forget creates tombstone file", tombDel.deleted === true && fs.existsSync(tombFile));
+  const tombJson = JSON.parse(fs.readFileSync(tombFile, "utf8"));
+  check("tombstone content matches deleted record", tombJson.id === tombRec.id && tombJson.content === tombRec.content && tombJson.type === "fact" && tombJson.importance === 0.42 && Array.isArray(tombJson.tags) && tombJson.tags[0] === "probe", JSON.stringify(tombJson));
+  check("tombstone has deletedAt timestamp", typeof tombJson.deletedAt === "number" && tombJson.deletedAt > 0, String(tombJson.deletedAt));
+  const secondTry = mem.forget(tombRec.id);
+  check("forget on missing id is a no-op (no extra tombstone)", secondTry.deleted === false && fs.readdirSync(path.join(STORAGE_DIR, "forget-bin")).filter((f) => f === `${tombRec.id}.json`).length === 1);
+  const recovered = await mem.remember({ content: tombJson.content, type: tombJson.type, importance: tombJson.importance, tags: tombJson.tags });
+  check("tombstone content is sufficient to re-create the memory", mem.listMemories().some((m) => m.id === recovered.id && m.content === tombJson.content));
+  fs.rmSync(tombFile, { force: true });
+  mem.forget(recovered.id);
 
   // Tag filtering must be exact, not a JSON substring match.
   await mem.remember({ content: "Alpha services use Bazel for builds.", type: "fact", tags: ["alpha"] });
